@@ -14,7 +14,7 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   if (!product) return Response.json({ error: "Product not found." }, { status: 404 });
   await db.update(monitoredProducts).set({ status: "searching", statusMessage: "Searching public pages…", updatedAt: new Date().toISOString() }).where(eq(monitoredProducts.id, id));
   const profiles = await db.select().from(customSearchProfiles).where(eq(customSearchProfiles.enabled, true));
-  const result = await searchPublicWebsite(product.websiteUrl, product.productName, product.ean, profiles);
+  const result = await searchPublicWebsite(product.websiteUrl, product.productName, product.ean, profiles, product.matchedUrl);
   const now = new Date().toISOString();
   const [updated] = await db.update(monitoredProducts).set({
     status: result.status, statusMessage: result.message, matchedUrl: result.matchedUrl ?? null, resultTitle: result.title ?? null,

@@ -1,6 +1,7 @@
 import { assertPublicHostname } from "./product-input";
 import { extractProductMatch } from "./product-extraction";
 import { buildSearchCandidates, sameStoreHostname, type CustomSearchProfile } from "./site-search-profiles";
+import { discoverProductPageUrls } from "./ai-product-discovery";
 
 export type ProductSearchResult = {
   status: "found" | "not_found" | "blocked" | "error";
@@ -17,7 +18,7 @@ type QueueItem = { url: string; profileLabel: string };
 type Page = QueueItem & { html: string };
 type FetchedPage = { url: string; html: string };
 
-export async function searchPublicWebsite(websiteUrl: string, productName: string, ean: string, customProfiles: CustomSearchProfile[] = []): Promise<ProductSearchResult> {
+export async function searchPublicWebsite(websiteUrl: string, productName: string, ean: string, customProfiles: CustomSearchProfile[] = [], preferredUrl?: string | null): Promise<ProductSearchResult> {
   try {
     const root = new URL(websiteUrl);
     const queries = [ean, `${productName} ${ean}`];
@@ -25,9 +26,11 @@ export async function searchPublicWebsite(websiteUrl: string, productName: strin
     const knownCandidates = initialCandidates.filter(candidate => candidate.profileId !== "generic");
     const genericCandidates = initialCandidates.filter(candidate => candidate.profileId === "generic");
     const rootCandidate = { url: root.toString(), profileLabel: "the submitted page" };
-    const queue: QueueItem[] = knownCandidates.length
+    const searchQueue: QueueItem[] = knownCandidates.length
       ? [...knownCandidates, rootCandidate, ...genericCandidates]
       : [rootCandidate, ...genericCandidates];
+    const preferredCandidate = safePreferredCandidate(preferredUrl, root);
+    const queue: QueueItem[] = preferredCandidate ? [preferredCandidate, ...searchQueue] : searchQueue;
     const seen = new Set<string>();
     const pages: Page[] = [];
     let blocked = false;
@@ -56,24 +59,53 @@ export async function searchPublicWebsite(websiteUrl: string, productName: strin
       if (!best || result.score > best.score) best = { ...result, profileLabel: page.profileLabel };
     }
     if (best && (best.eanMatch || (best.nameScore >= 0.65 && best.priceCents != null))) {
-      return {
-        status: "found",
-        message: best.priceCents != null
-          ? `${best.eanMatch ? "Exact EAN" : "Product name"} matched via ${best.profileLabel}; current price read from ${priceSourceLabel(best.priceSource)}.`
-          : `${best.eanMatch ? "Exact EAN" : "Product name"} matched, but no reliable current price was published.`,
-        matchedUrl: best.url,
-        title: best.title,
-        priceCents: best.priceCents,
-        currency: best.currency,
-        inStock: best.inStock,
-        matchType: best.eanMatch ? "ean" : "name",
-      };
+      return matchedResult(best);
     }
+    const discovery = await discoverProductPageUrls({ websiteUrl, productName, ean });
+    let aiBest: (ReturnType<typeof extractProductMatch> & { profileLabel: string }) | null = null;
+    for (const url of discovery.urls.slice(0, 3)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      try {
+        const fetched = await fetchPublicPage(url, root.hostname);
+        const result = extractProductMatch(fetched.html, fetched.url, productName, ean);
+        if (!aiBest || result.score > aiBest.score) aiBest = { ...result, profileLabel: "AI-assisted discovery" };
+      } catch (error) {
+        if (error instanceof Error && /403|429|robots|blocked/i.test(error.message)) blocked = true;
+      }
+    }
+    if (aiBest && (aiBest.eanMatch || (aiBest.nameScore >= 0.9 && aiBest.priceCents != null))) return matchedResult(aiBest);
     if (blocked && pages.length === 0) return { status: "blocked", message: "The website blocked or rate-limited the public check." };
-    return { status: "not_found", message: "No reliable EAN or product-price match was found on the checked public pages." };
+    return { status: "not_found", message: discovery.attempted
+      ? "Neither website search nor AI-assisted discovery produced a verifiable EAN or product-price match."
+      : "No reliable EAN or product-price match was found on the checked public pages." };
   } catch (error) {
     return { status: "error", message: error instanceof Error ? error.message : "The website could not be searched." };
   }
+}
+
+function safePreferredCandidate(value: string | null | undefined, root: URL): QueueItem | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || !sameStoreHostname(url.hostname, root.hostname)) return null;
+    return { url: url.toString(), profileLabel: "the saved product page" };
+  } catch { return null; }
+}
+
+function matchedResult(best: ReturnType<typeof extractProductMatch> & { profileLabel: string }): ProductSearchResult {
+  return {
+    status: "found",
+    message: best.priceCents != null
+      ? `${best.eanMatch ? "Exact EAN" : "Product name"} matched via ${best.profileLabel}; current price read from ${priceSourceLabel(best.priceSource)}.`
+      : `${best.eanMatch ? "Exact EAN" : "Product name"} matched via ${best.profileLabel}, but no reliable current price was published.`,
+    matchedUrl: best.url,
+    title: best.title,
+    priceCents: best.priceCents,
+    currency: best.currency,
+    inStock: best.inStock,
+    matchType: best.eanMatch ? "ean" : "name",
+  };
 }
 
 async function fetchPublicPage(input: string, originalHostname: string): Promise<FetchedPage> {

@@ -11,7 +11,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return body;
 }
 
-export default function AdminClient({ email }: { email: string }) {
+export default function AdminClient({ email, aiConfigured }: { email: string; aiConfigured: boolean }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [label, setLabel] = useState("");
   const [hostname, setHostname] = useState("");
@@ -38,6 +38,7 @@ export default function AdminClient({ email }: { email: string }) {
   }
 
   return <main className="admin-page"><header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
+    <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted discovery: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI will search the selected store only when normal discovery fails, and PriceWatch will verify every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable the hybrid fallback. Normal website search remains active."}</span></section>
     <section className="admin-card"><div className="admin-intro"><h2>Add a search profile</h2><p>Use a domain for a specific store, an HTML signature for a shared platform, or both. The search URL must contain <code>{"{query}"}</code>.</p></div>
       <form onSubmit={addProfile} className="admin-form">
         <label><span>Profile name</span><input required value={label} onChange={event => setLabel(event.target.value)} placeholder="Example Store search"/></label>
