@@ -104,9 +104,9 @@ export function buildSearchCandidates(root: URL, queries: string[], html?: strin
   };
 
   for (const profile of customProfiles) {
-    const hostMatches = profile.hostname && sameStoreHostname(root.hostname, profile.hostname);
-    const htmlMatches = html && profile.htmlSignature && html.toLowerCase().includes(profile.htmlSignature.toLowerCase());
-    if (!hostMatches && !htmlMatches) continue;
+    const hostMatches = !profile.hostname || sameStoreHostname(root.hostname, profile.hostname);
+    const htmlMatches = !profile.htmlSignature || Boolean(html?.toLowerCase().includes(profile.htmlSignature.toLowerCase()));
+    if (!hostMatches || !htmlMatches) continue;
     addProfileCandidates(add, root, queries, { id: `custom-${profile.id}`, label: profile.label, templates: [profile.searchUrlTemplate] });
   }
 

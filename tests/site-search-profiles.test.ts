@@ -46,6 +46,16 @@ test("uses an admin-defined HTML signature and search URL before a discovered fo
   assert.equal(candidates[1].profileId, "form-1");
 });
 
+test("requires every configured custom-profile match condition", () => {
+  const profile = [{
+    id: "specific-platform", label: "Specific platform", hostname: "store.example",
+    htmlSignature: "data-specific-shop", searchUrlTemplate: "/catalog?q={query}",
+  }];
+  assert.equal(buildSearchCandidates(new URL("https://other.example/"), ["12345678"], "data-specific-shop", profile)[0].profileId, "generic");
+  assert.equal(buildSearchCandidates(new URL("https://store.example/"), ["12345678"], "no platform marker", profile)[0].profileId, "generic");
+  assert.equal(buildSearchCandidates(new URL("https://store.example/"), ["12345678"], "data-specific-shop", profile)[0].profileId, "custom-specific-platform");
+});
+
 test("provides common query-name fallbacks for an unknown website", () => {
   const candidates = buildSearchCandidates(new URL("https://store.example/"), ["12345678"]);
   assert.deepEqual(

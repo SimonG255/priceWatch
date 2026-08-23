@@ -6,17 +6,28 @@ export type ProductInput = {
   notes?: string;
 };
 
+export type ProductDetailsInput = Omit<ProductInput, "websiteUrl">;
+
 export function normalizeEan(value: string) {
   return value.replace(/\D/g, "");
 }
 
 export function validateProductInput(input: ProductInput): ProductInput {
-  const productName = input.productName?.trim();
-  const ean = normalizeEan(input.ean ?? "");
-  if (!productName || productName.length < 2 || productName.length > 180) throw new Error("Enter a product name between 2 and 180 characters.");
-  if (![8, 12, 13, 14].includes(ean.length)) throw new Error("EAN must contain 8, 12, 13, or 14 digits.");
+  const details = validateProductDetails(input);
   const websiteUrl = validateWebsiteUrl(input.websiteUrl);
-  return { websiteUrl, productName, ean, sku: input.sku?.trim().slice(0, 80) ?? "", notes: input.notes?.trim().slice(0, 500) ?? "" };
+  return { websiteUrl, ...details };
+}
+
+export function validateProductDetails(input: ProductDetailsInput): ProductDetailsInput {
+  const productName = requiredString(input?.productName, "Enter a product name between 2 and 180 characters.").trim();
+  const ean = normalizeEan(requiredString(input?.ean, "EAN must contain 8, 12, 13, or 14 digits."));
+  const sku = optionalString(input?.sku, "SKU must be text.").trim();
+  const notes = optionalString(input?.notes, "Notes must be text.").trim();
+  if (productName.length < 2 || productName.length > 180) throw new Error("Enter a product name between 2 and 180 characters.");
+  if (![8, 12, 13, 14].includes(ean.length)) throw new Error("EAN must contain 8, 12, 13, or 14 digits.");
+  if (sku.length > 80) throw new Error("SKU must be 80 characters or fewer.");
+  if (notes.length > 500) throw new Error("Notes must be 500 characters or fewer.");
+  return { productName, ean, sku, notes };
 }
 
 export function validateWebsiteUrl(value: string) {
@@ -38,4 +49,15 @@ export function assertPublicHostname(hostname: string) {
     const [a, b] = host.split(".").map(Number);
     if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) throw new Error("Private network addresses are not supported.");
   }
+}
+
+function requiredString(value: unknown, message: string) {
+  if (typeof value !== "string") throw new Error(message);
+  return value;
+}
+
+function optionalString(value: unknown, message: string) {
+  if (value == null) return "";
+  if (typeof value !== "string") throw new Error(message);
+  return value;
 }

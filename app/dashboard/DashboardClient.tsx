@@ -13,6 +13,9 @@ type Product = {
   currency: string | null; inStock: boolean | null; matchType: string | null; lastCheckedAt: string | null; createdAt: string;
 };
 type Website = { id: string; url: string; createdAt: string };
+type ProductDraft = { id: string; productName: string; ean: string; sku: string };
+
+const emptyDraft = (id = "product-1"): ProductDraft => ({ id, productName: "", ean: "", sku: "" });
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -44,11 +47,10 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
   const [menu, setMenu] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [selectedWebsiteIds, setSelectedWebsiteIds] = useState<string[]>([]);
   const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
-  const [productName, setProductName] = useState("");
-  const [ean, setEan] = useState("");
-  const [sku, setSku] = useState("");
+  const [productDrafts, setProductDrafts] = useState<ProductDraft[]>([emptyDraft()]);
+  const [bulkProgress, setBulkProgress] = useState("");
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [importProgress, setImportProgress] = useState("");
@@ -59,7 +61,7 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
 
   useEffect(() => {
     Promise.all([jsonRequest<{ products: Product[] }>("/api/products"), jsonRequest<{ websites: Website[] }>("/api/websites")])
-      .then(([productData, websiteData]) => { setProducts(productData.products); setWebsites(websiteData.websites); setWebsiteUrl(websiteData.websites[0]?.url || ""); })
+      .then(([productData, websiteData]) => { setProducts(productData.products); setWebsites(websiteData.websites); setSelectedWebsiteIds(websiteData.websites.map(website => website.id)); })
       .catch(err => setError(err.message)).finally(() => setLoading(false));
   }, []);
 
@@ -70,9 +72,35 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
   const foundCount = products.filter(product => product.status === "found").length;
   const waitingCount = products.filter(product => ["queued", "searching"].includes(product.status)).length;
   const pricedCount = products.filter(product => product.priceCents != null).length;
+  const selectedWebsites = useMemo(() => websites.filter(website => selectedWebsiteIds.includes(website.id)), [websites, selectedWebsiteIds]);
+  const activeDrafts = useMemo(() => productDrafts.filter(draft => draft.productName.trim() || draft.ean.trim() || draft.sku.trim()), [productDrafts]);
+  const uniqueDraftCount = useMemo(() => new Set(activeDrafts.map(draft => draft.ean.replace(/\D/g, "") || draft.id)).size, [activeDrafts]);
+  const combinationCount = uniqueDraftCount * selectedWebsites.length;
 
   function showToast(message: string) { setToast(message); window.setTimeout(() => setToast(""), 3200); }
   function mergeProduct(product: Product) { setProducts(current => current.some(item => item.id === product.id) ? current.map(item => item.id === product.id ? product : item) : [product, ...current]); }
+  function mergeProducts(incoming: Product[]) {
+    setProducts(current => {
+      const incomingIds = new Set(incoming.map(product => product.id));
+      return [...incoming, ...current.filter(product => !incomingIds.has(product.id))];
+    });
+  }
+
+  function updateDraft(id: string, field: keyof Omit<ProductDraft, "id">, value: string) {
+    setProductDrafts(current => current.map(draft => draft.id === id ? { ...draft, [field]: value } : draft));
+  }
+
+  function addDraft() {
+    setProductDrafts(current => [...current, emptyDraft(crypto.randomUUID())]);
+  }
+
+  function removeDraft(id: string) {
+    setProductDrafts(current => current.length === 1 ? current : current.filter(draft => draft.id !== id));
+  }
+
+  function toggleWebsite(id: string) {
+    setSelectedWebsiteIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
+  }
 
   async function scanOne(id: string, quiet = false) {
     setProducts(current => current.map(product => product.id === id ? { ...product, status: "searching", statusMessage: "Searching public pages…" } : product));
@@ -89,15 +117,36 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
     }
   }
 
-  async function addProduct(event: React.FormEvent) {
+  async function scanMany(items: Product[], setProgress: (message: string) => void) {
+    for (let index = 0; index < items.length; index += 3) {
+      const batch = items.slice(index, index + 3);
+      setProgress(`Searching ${Math.min(index + 3, items.length)} of ${items.length} product-website combinations…`);
+      await Promise.all(batch.map(product => scanOne(product.id, true)));
+    }
+  }
+
+  function countNewPairs(items: { ean: string }[]) {
+    const existing = new Set(products.map(product => `${product.websiteUrl}\u0000${product.ean}`));
+    const eans = [...new Set(items.map(item => item.ean.replace(/\D/g, "")).filter(Boolean))];
+    return selectedWebsites.reduce((count, website) => count + eans.filter(ean => !existing.has(`${website.url}\u0000${ean}`)).length, 0);
+  }
+
+  async function addProducts(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
     try {
-      if (products.length >= planLimit) throw new Error(`Your plan allows ${planLimit.toLocaleString()} monitored URLs.`);
-      const { product } = await jsonRequest<{ product: Product }>("/api/products", { method: "POST", body: JSON.stringify({ websiteUrl, productName, ean, sku }) });
-      mergeProduct(product); setWebsiteUrl(""); setProductName(""); setEan(""); setSku("");
-      await scanOne(product.id);
-    } catch (err) { setError(err instanceof Error ? err.message : "Product could not be added."); }
-    finally { setSaving(false); }
+      if (!activeDrafts.length) throw new Error("Add at least one product.");
+      if (!selectedWebsiteIds.length) throw new Error("Select at least one website.");
+      if (combinationCount > 250) throw new Error("Search up to 250 product-website combinations at a time.");
+      const newPairs = countNewPairs(activeDrafts);
+      if (newPairs > planLimit - products.length) throw new Error(`This adds ${newPairs} monitored searches, but your plan has room for ${Math.max(0, planLimit - products.length).toLocaleString()}.`);
+      setBulkProgress(`Saving ${combinationCount} product-website combinations…`);
+      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: activeDrafts.map(({ productName, ean, sku }) => ({ productName, ean, sku })), websiteIds: selectedWebsiteIds }) });
+      mergeProducts(result.products);
+      await scanMany(result.products, setBulkProgress);
+      setProductDrafts([emptyDraft()]);
+      showToast(`${result.productCount} product${result.productCount === 1 ? "" : "s"} searched on ${result.websiteCount} website${result.websiteCount === 1 ? "" : "s"}`);
+    } catch (err) { setError(err instanceof Error ? err.message : "Products could not be added."); }
+    finally { setBulkProgress(""); setSaving(false); }
   }
 
   async function addWebsite(event: React.FormEvent) {
@@ -105,7 +154,8 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
     try {
       const { website } = await jsonRequest<{ website: Website }>("/api/websites", { method: "POST", body: JSON.stringify({ url: newWebsiteUrl }) });
       setWebsites(current => current.some(item => item.id === website.id) ? current : [...current, website]);
-      setWebsiteUrl(website.url); setNewWebsiteUrl(""); showToast("Website added");
+      setSelectedWebsiteIds(current => current.includes(website.id) ? current : [...current, website.id]);
+      setNewWebsiteUrl(""); showToast("Website added and selected");
     } catch (err) { setError(err instanceof Error ? err.message : "Website could not be added."); }
     finally { setSaving(false); }
   }
@@ -123,26 +173,20 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       const nameIndex = column(["product name", "name"]); const eanIndex = column(["ean", "gtin", "barcode"]);
       const skuIndex = column(["sku (optional)", "sku"]); const notesIndex = column(["notes (optional)", "notes"]);
       if ([nameIndex, eanIndex].some(index => index < 0)) throw new Error("The workbook needs Product Name and EAN columns.");
-      if (!websites.length) throw new Error("Add at least one website before importing products.");
+      if (!selectedWebsiteIds.length) throw new Error("Select at least one website before importing products.");
       const imported = rows.slice(headerRow + 1).map(row => ({
         productName: String(row[nameIndex] ?? "").trim(), ean: String(row[eanIndex] ?? "").trim(),
         sku: skuIndex >= 0 ? String(row[skuIndex] ?? "").trim() : "", notes: notesIndex >= 0 ? String(row[notesIndex] ?? "").trim() : "",
       })).filter(row => row.productName && row.ean && !/example product/i.test(row.productName));
       if (!imported.length) throw new Error("No product rows were found. Delete the example row and add your products first.");
       const remaining = planLimit - products.length;
-      const searchesToCreate = imported.length * websites.length;
-      if (searchesToCreate > remaining) throw new Error(`This import creates ${searchesToCreate} searches across ${websites.length} websites, but your plan has room for ${Math.max(0, remaining)}.`);
-      setImportProgress(`Saving ${searchesToCreate} product searches…`);
-      const { products: created } = await jsonRequest<{ products: Product[] }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: imported }) });
-      setProducts(current => {
-        const map = new Map(current.map(product => [product.id, product])); created.forEach(product => map.set(product.id, product)); return [...created, ...[...map.values()].filter(product => !created.some(item => item.id === product.id))];
-      });
-      for (let index = 0; index < created.length; index += 3) {
-        const batch = created.slice(index, index + 3);
-        setImportProgress(`Searching ${Math.min(index + 3, created.length)} of ${created.length} products…`);
-        await Promise.all(batch.map(product => scanOne(product.id, true)));
-      }
-      setImportOpen(false); setImportProgress(""); showToast(`${imported.length} products searched on ${websites.length} websites`);
+      const newPairs = countNewPairs(imported);
+      if (newPairs > remaining) throw new Error(`This import adds ${newPairs} searches, but your plan has room for ${Math.max(0, remaining)}.`);
+      setImportProgress(`Saving products across ${selectedWebsites.length} selected websites…`);
+      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: imported, websiteIds: selectedWebsiteIds }) });
+      mergeProducts(result.products);
+      await scanMany(result.products, setImportProgress);
+      setImportOpen(false); setImportProgress(""); showToast(`${result.productCount} products searched on ${result.websiteCount} websites`);
     } catch (err) { setImportProgress(""); setError(err instanceof Error ? err.message : "The workbook could not be imported."); }
     finally { if (fileRef.current) fileRef.current.value = ""; }
   }
@@ -185,19 +229,24 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{customPlan ? `${customPlan.urls.toLocaleString()} URLs · ${customPlan.checks} checks/day` : "Public product monitoring"}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={exportWorkbook}><Icon name="download"/>Export Excel</button></div></header>
 
       <section className="product-search-card website-card">
-        <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Add websites separately</h2><p>Save each public store once. Excel imports search every saved website, while manually added products use the website you select.</p></div></div>
+        <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Add websites, then select where to search</h2><p>Save each public store once. Select one or many websites for manual searches and Excel imports.</p></div></div>
         <form className="website-form" onSubmit={addWebsite}><label><span>Website URL</span><input required type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/></label><button className="secondary-action" disabled={saving} type="submit"><Icon name="plus"/>Add website</button></form>
-        <div className="website-list">{websites.length ? websites.map(website => <button type="button" key={website.id} className={websiteUrl === website.url ? "selected" : ""} onClick={() => setWebsiteUrl(website.url)}>{new URL(website.url).hostname}</button>) : <small>No websites added yet.</small>}</div>
+        <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
+        <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; }) : <small>No websites added yet.</small>}</div>
       </section>
 
       <section className="product-search-card" id="search-product">
-        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">ADD A PRODUCT</span><h2>Choose where to search for this product</h2><p>Enter the product name and EAN, then select one of your saved websites.</p></div></div>
-        <form className="product-search-form" onSubmit={addProduct}>
-          <label className="wide-field"><span>Website to search</span><select required value={websiteUrl} onChange={event => setWebsiteUrl(event.target.value)}><option value="" disabled>{websites.length ? "Choose a website" : "Add a website above first"}</option>{websites.map(website => <option key={website.id} value={website.url}>{new URL(website.url).hostname}</option>)}</select></label>
-          <label><span>Product name</span><input required value={productName} onChange={event => setProductName(event.target.value)} placeholder="Logitech MX Master 4"/></label>
-          <label><span>EAN / GTIN</span><input required inputMode="numeric" value={ean} onChange={event => setEan(event.target.value)} placeholder="5099206123456"/></label>
-          <label><span>SKU <small>optional</small></span><input value={sku} onChange={event => setSku(event.target.value)} placeholder="MXM4-GRAPHITE"/></label>
-          <button className="primary search-submit" disabled={saving} type="submit"><Icon name="search"/>{saving ? "Searching…" : "Add & search product"}</button>
+        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">BULK PRODUCT SEARCH</span><h2>Search multiple products on multiple websites</h2><p>Add product rows below. PriceWatch creates and searches every product × selected website combination.</p></div></div>
+        <form className="bulk-product-form" onSubmit={addProducts}>
+          <div className="selected-sites-summary"><strong>Searching on {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"}</strong><span>{selectedWebsites.length ? selectedWebsites.map(website => new URL(website.url).hostname).join(", ") : "Select at least one website above."}</span></div>
+          <div className="draft-list">{productDrafts.map((draft, index) => <div className="draft-row" key={draft.id}>
+            <span className="draft-number">{index + 1}</span>
+            <label><span>Product name</span><input required value={draft.productName} onChange={event => updateDraft(draft.id, "productName", event.target.value)} placeholder="Logitech MX Master 4"/></label>
+            <label><span>EAN / GTIN</span><input required inputMode="numeric" value={draft.ean} onChange={event => updateDraft(draft.id, "ean", event.target.value)} placeholder="5099206123456"/></label>
+            <label><span>SKU <small>optional</small></span><input value={draft.sku} onChange={event => updateDraft(draft.id, "sku", event.target.value)} placeholder="MXM4-GRAPHITE"/></label>
+            <button className="remove-draft" type="button" disabled={productDrafts.length === 1} onClick={() => removeDraft(draft.id)} aria-label={`Remove product row ${index + 1}`}><Icon name="trash" size={15}/></button>
+          </div>)}</div>
+          <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{uniqueDraftCount} product{uniqueDraftCount === 1 ? "" : "s"} × {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"} = {combinationCount} searches</strong><small>Existing combinations are updated without creating duplicates.</small></div><button className="primary search-submit" disabled={saving || !selectedWebsites.length} type="submit"><Icon name="search"/>{bulkProgress || "Add & search combinations"}</button></div>
         </form>
         <details className="search-routing-help">
           <summary>How PriceWatch chooses a website search URL</summary>
@@ -217,7 +266,11 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       <footer><span><i/>Verified public-page monitoring</span><span>AI discovery runs only when normal store search fails</span></footer>
     </section>
 
-    {importOpen && <div className="modal-backdrop" onMouseDown={() => !importProgress && setImportOpen(false)}><div className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={event => event.stopPropagation()}><button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required; every product will be searched on all {websites.length || "saved"} websites.</p><div className="import-steps"><span><b>1</b>Add your websites</span><span><b>2</b>Fill in name and EAN</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/pricewatch-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || !websites.length} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (websites.length ? "Choose Excel file" : "Add a website first")}</button><small className="import-limit">Each imported product creates one monitored search per saved website, then searches them in small batches.</small></div></div>}
+    {importOpen && <div className="modal-backdrop" onMouseDown={() => !importProgress && setImportOpen(false)}><div className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={event => event.stopPropagation()}>
+      <button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required. Each row will be searched on the websites selected below.</p>
+      <div className="import-website-picker"><div><strong>Websites to search</strong><span>{selectedWebsites.length} selected</span></div><div className="website-list selectable">{websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; })}</div></div>
+      <div className="import-steps"><span><b>1</b>Select websites</span><span><b>2</b>Fill in name and EAN</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/pricewatch-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || !selectedWebsites.length} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Select a website first")}</button><small className="import-limit">Products are saved and searched in batches of three to avoid overwhelming store websites.</small>
+    </div></div>}
     {toast && <div className="toast"><Icon name="bolt" size={17}/>{toast}</div>}
   </main>;
 }
