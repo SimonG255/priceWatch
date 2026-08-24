@@ -1,0 +1,3 @@
+0000000000000000000000000000000000000000 58221d0d1aa90d9e77a089b6bfcff45e7bcbf5b4 Codex <codex@openai.com> 1787418396 +0200	commit (initial): Fix admin access and add search profile management
+58221d0d1aa90d9e77a089b6bfcff45e7bcbf5b4 e77c069052565f4cc32eedb077c990f8a8c99fe2 Codex <codex@openai.com> 1787480792 +0200	commit: Add verified AI product discovery fallback
+e77c069052565f4cc32eedb077c990f8a8c99fe2 7039503afa04a7ab788a7dbd9b08ba6ace7ad775 Codex <codex@openai.com> 1787487986 +0200	commit: Harden bulk imports and search profile management
