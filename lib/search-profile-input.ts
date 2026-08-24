@@ -15,6 +15,10 @@ export type SearchProfileInput = {
   blockPatterns: string;
   allowRenderedFallback: boolean;
   enabled: boolean;
+  siteType?: "auto" | "standard" | "slow" | "large" | "javascript" | "marketplace";
+  timeoutMs?: number | null;
+  maxPageBytes?: number | null;
+  retryBudget?: number | null;
 };
 
 export function validateSearchProfileInput(value: Record<string, unknown>): SearchProfileInput {
@@ -34,6 +38,10 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
   }
   const allowRenderedFallback = value.allowRenderedFallback === true;
   const enabled = value.enabled == null ? true : value.enabled;
+  const siteType = value.siteType == null ? undefined : validateSiteType(value.siteType);
+  const timeoutMs = optionalInteger(value.timeoutMs, "Timeout", 3_000, 30_000);
+  const maxPageBytes = optionalInteger(value.maxPageBytes, "Page size budget", 256_000, 8_000_000);
+  const retryBudget = optionalInteger(value.retryBudget, "Retry budget", 0, 4);
 
   if (label.length < 2) throw new Error("Enter a profile name.");
   if (label.length > 80) throw new Error("Profile name must be 80 characters or fewer.");
@@ -69,6 +77,10 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
     productSelector, eanSelector, priceSelector,
     jsonLdEanFields, jsonLdPriceFields, jsonLdCurrencyFields,
     blockPatterns, allowRenderedFallback, enabled,
+    ...(siteType ? { siteType } : {}),
+    ...(value.timeoutMs != null ? { timeoutMs } : {}),
+    ...(value.maxPageBytes != null ? { maxPageBytes } : {}),
+    ...(value.retryBudget != null ? { retryBudget } : {}),
   };
 }
 
@@ -129,4 +141,16 @@ function normalizeBlockPatterns(value: string) {
     throw new Error("Block or challenge markers must be short literal text.");
   }
   return [...new Set(patterns)].join("\n");
+}
+
+function validateSiteType(value: unknown): NonNullable<SearchProfileInput["siteType"]> {
+  if (typeof value !== "string" || !["auto", "standard", "slow", "large", "javascript", "marketplace"].includes(value)) throw new Error("Choose a valid site type.");
+  return value as NonNullable<SearchProfileInput["siteType"]>;
+}
+
+function optionalInteger(value: unknown, label: string, minimum: number, maximum: number) {
+  if (value == null || value === "") return null;
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < minimum || number > maximum) throw new Error(`${label} must be a whole number from ${minimum} to ${maximum}.`);
+  return number;
 }

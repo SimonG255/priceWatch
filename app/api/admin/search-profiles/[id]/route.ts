@@ -12,11 +12,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     const input = validateSearchProfileInput(await request.json() as Record<string, unknown>);
     const db = getDb();
     const profiles = await db.select().from(customSearchProfiles);
-    if (!profiles.some((profile) => profile.id === id)) return Response.json({ error: "Search profile not found." }, { status: 404 });
+    const existing = profiles.find((profile) => profile.id === id);
+    if (!existing) return Response.json({ error: "Search profile not found." }, { status: 404 });
     if (profiles.some((profile) => profile.id !== id && searchProfileIdentity(profile) === searchProfileIdentity(input))) {
       return Response.json({ error: "A profile for this website and HTML signature already exists." }, { status: 409 });
     }
-    const [profile] = await db.update(customSearchProfiles).set({ ...input, updatedAt: new Date().toISOString() }).where(eq(customSearchProfiles.id, id)).returning();
+    const [profile] = await db.update(customSearchProfiles).set({ ...input, revision: existing.revision + 1, driftStatus: "unknown", updatedAt: new Date().toISOString() }).where(eq(customSearchProfiles.id, id)).returning();
     return Response.json({ profile });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "Profile could not be updated." }, { status: 400 });

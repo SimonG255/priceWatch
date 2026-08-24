@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import ScraperOperations from "./ScraperOperations";
 
 type Profile = {
   id: string;
@@ -17,6 +18,13 @@ type Profile = {
   blockPatterns: string;
   allowRenderedFallback: boolean;
   enabled: boolean;
+  siteType: "auto" | "standard" | "slow" | "large" | "javascript" | "marketplace";
+  timeoutMs: number | null;
+  maxPageBytes: number | null;
+  retryBudget: number | null;
+  healthScore: number;
+  driftStatus: string;
+  lastSeenWorkingAt: string | null;
   createdAt: string;
 };
 
@@ -36,7 +44,21 @@ type ScraperHealth = {
   backoffUntil: string | null;
 };
 
-type ProfileForm = Omit<Profile, "id" | "createdAt">;
+type ProfileForm = Omit<Profile, "id" | "createdAt" | "healthScore" | "driftStatus" | "lastSeenWorkingAt">;
+
+type ProfileTestResponse = {
+  result: {
+    status: string;
+    message: string;
+    reasonCode?: string;
+    matchedUrl?: string;
+    profileHealth?: { score: number; status: string; signatureMatched?: boolean; selectorSuggestions?: string[] };
+    confidenceScores?: { ean: number; name: number; price: number; source: number; overall: number };
+    evidence?: { canonicalUrl?: string };
+  };
+  attempts: Array<{ url: string; outcome: string; reasonCode: string; httpStatus?: number | null; durationMs: number }>;
+  profileHealth: ProfileTestResponse["result"]["profileHealth"] | null;
+};
 
 const emptyProfile: ProfileForm = {
   label: "",
@@ -52,6 +74,10 @@ const emptyProfile: ProfileForm = {
   blockPatterns: "",
   allowRenderedFallback: false,
   enabled: true,
+  siteType: "auto",
+  timeoutMs: null,
+  maxPageBytes: null,
+  retryBudget: null,
 };
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -95,6 +121,11 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [testUrl, setTestUrl] = useState("");
+  const [testName, setTestName] = useState("");
+  const [testEan, setTestEan] = useState("");
+  const [testResult, setTestResult] = useState<ProfileTestResponse | null>(null);
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     request<{ profiles: Profile[]; websites: UsedWebsite[]; health: ScraperHealth[] }>("/api/admin/search-profiles")
@@ -131,7 +162,12 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
       blockPatterns: profile.blockPatterns,
       allowRenderedFallback: profile.allowRenderedFallback,
       enabled: profile.enabled,
+      siteType: profile.siteType || "auto",
+      timeoutMs: profile.timeoutMs,
+      maxPageBytes: profile.maxPageBytes,
+      retryBudget: profile.retryBudget,
     });
+    setTestResult(null);
     setError("");
     document.getElementById("profile-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -172,9 +208,27 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
     }
   }
 
+  async function testProfile() {
+    setTesting(true);
+    setError("");
+    setTestResult(null);
+    try {
+      setTestResult(await request<ProfileTestResponse>("/api/admin/search-profiles/test", {
+        method: "POST",
+        body: JSON.stringify({ url: testUrl, productName: testName, ean: testEan, profile: form }),
+      }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Profile test failed.");
+    } finally {
+      setTesting(false);
+    }
+  }
+
   return <main className="admin-page">
     <header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
     <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. PriceWatch verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
+
+    <ScraperOperations/>
 
     <section className="admin-card website-inventory">
       <div className="admin-intro"><h2>Websites in use across customer accounts</h2><p>These are the website hostnames currently submitted by customers. Customer names, product details, and full URLs are not shown here. Edit a matching profile, or configure a new one for a website that needs a different search route or extraction rule.</p></div>
@@ -203,6 +257,10 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
           <label><span>Product container selector <small>example: .product-card</small></span><input maxLength={180} value={form.productSelector} onChange={event => change("productSelector", event.target.value)} placeholder=".product-card"/></label>
           <label><span>EAN selector <small>example: [data-ean]</small></span><input maxLength={180} value={form.eanSelector} onChange={event => change("eanSelector", event.target.value)} placeholder="[data-ean]"/></label>
           <label><span>Price selector <small>example: [itemprop=price]</small></span><input maxLength={180} value={form.priceSelector} onChange={event => change("priceSelector", event.target.value)} placeholder="[itemprop=price]"/></label>
+          <label><span>Site type</span><select value={form.siteType} onChange={event => change("siteType", event.target.value as ProfileForm["siteType"])}><option value="auto">Automatic</option><option value="standard">Standard store</option><option value="slow">Slow store</option><option value="large">Large pages</option><option value="javascript">JavaScript-heavy</option><option value="marketplace">Marketplace</option></select></label>
+          <label><span>Page timeout <small>milliseconds, 3,000–30,000</small></span><input type="number" min={3000} max={30000} step={500} value={form.timeoutMs ?? ""} onChange={event => change("timeoutMs", event.target.value ? Number(event.target.value) : null)} placeholder="Automatic"/></label>
+          <label><span>Page size cap <small>bytes, 256,000–8,000,000</small></span><input type="number" min={256000} max={8000000} step={64000} value={form.maxPageBytes ?? ""} onChange={event => change("maxPageBytes", event.target.value ? Number(event.target.value) : null)} placeholder="Automatic"/></label>
+          <label><span>Retry budget <small>0–4 retries per candidate</small></span><input type="number" min={0} max={4} value={form.retryBudget ?? ""} onChange={event => change("retryBudget", event.target.value === "" ? null : Number(event.target.value))} placeholder="Automatic"/></label>
           <label><span>JSON-LD EAN fields <small>comma-separated, e.g. gtin13, barcode</small></span><input maxLength={500} value={form.jsonLdEanFields} onChange={event => change("jsonLdEanFields", event.target.value)} placeholder="gtin13, barcode"/></label>
           <label><span>JSON-LD price fields <small>comma-separated, e.g. offers.price</small></span><input maxLength={500} value={form.jsonLdPriceFields} onChange={event => change("jsonLdPriceFields", event.target.value)} placeholder="offers.price"/></label>
           <label><span>JSON-LD currency fields <small>comma-separated, e.g. offers.priceCurrency</small></span><input maxLength={500} value={form.jsonLdCurrencyFields} onChange={event => change("jsonLdCurrencyFields", event.target.value)} placeholder="offers.priceCurrency"/></label>
@@ -211,7 +269,13 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
         </div></details>
         <label className="enabled-control"><input type="checkbox" checked={form.enabled} onChange={event => change("enabled", event.target.checked)}/><span>Enabled for product searches</span></label>
         <div className="admin-form-actions"><button disabled={saving} type="submit">{saving ? "Saving…" : editingId ? "Save website changes" : "Add website profile"}</button>{editingId && <button className="cancel-edit" disabled={saving} type="button" onClick={resetForm}>Cancel</button>}</div>
-      </form>{error && <p className="admin-error" role="alert">{error}</p>}
+      </form>
+      <div className="profile-test-panel">
+        <div><strong>Test before saving</strong><small>Runs the draft profile against one public URL using live robots, cooldown, timeout, and size budgets. It does not save the result.</small></div>
+        <div className="profile-test-inputs"><label><span>Public test URL</span><input type="url" value={testUrl} onChange={event => setTestUrl(event.target.value)} placeholder="https://store.example/product-or-search"/></label><label><span>Expected product</span><input value={testName} onChange={event => setTestName(event.target.value)} placeholder="Product name"/></label><label><span>EAN / GTIN</span><input inputMode="numeric" value={testEan} onChange={event => setTestEan(event.target.value.replace(/\D/g, ""))} placeholder="EAN / GTIN"/></label><button type="button" disabled={testing || !testUrl || !testName || !testEan} onClick={testProfile}>{testing ? "Testing…" : "Run profile test"}</button></div>
+        {testResult && <div className={`profile-test-result ${testResult.result.status}`}><div><span className={`health-status ${testResult.result.status}`}>{testResult.result.status.replaceAll("_", " ")}</span><strong>{testResult.result.message}</strong></div><small>Reason: {testResult.result.reasonCode || "none"} · profile health: {(testResult.profileHealth ?? testResult.result.profileHealth)?.score ?? "—"}{(testResult.profileHealth ?? testResult.result.profileHealth) ? "%" : ""}{testResult.result.confidenceScores ? ` · confidence: ${testResult.result.confidenceScores.overall}%` : ""}</small>{(testResult.result.matchedUrl || testResult.result.evidence?.canonicalUrl) && <a href={testResult.result.matchedUrl || testResult.result.evidence?.canonicalUrl} target="_blank" rel="noreferrer">Open matched page</a>}<details><summary>{testResult.attempts.length} audited attempts</summary><ol>{testResult.attempts.map((attempt, index) => <li key={`${attempt.url}-${index}`}><code>{attempt.url}</code><span>{attempt.reasonCode} · {attempt.httpStatus ?? "no HTTP status"} · {attempt.durationMs} ms</span></li>)}</ol></details></div>}
+      </div>
+      {error && <p className="admin-error" role="alert">{error}</p>}
     </section>
 
     <section className="admin-card"><div className="admin-intro"><h2>Existing website profiles</h2><p>Update a website whenever its search route, HTML, structured data fields, or block markers change. Enabled profiles are applied before built-in routes and generic fallbacks.</p></div>

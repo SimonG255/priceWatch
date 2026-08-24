@@ -1,4 +1,5 @@
 import type { StoreExtractionProfile } from "./scraper-types.ts";
+import { contentFingerprint, suggestSelectors } from "./scraper-diagnostics.ts";
 
 export type SearchCandidate = {
   url: string;
@@ -20,6 +21,15 @@ export type CustomSearchProfile = {
   jsonLdCurrencyFields?: string;
   blockPatterns?: string;
   allowRenderedFallback?: boolean;
+  siteType?: StoreExtractionProfile["siteType"];
+  timeoutMs?: number | null;
+  maxPageBytes?: number | null;
+  retryBudget?: number | null;
+  healthScore?: number;
+  lastSeenWorkingAt?: string | null;
+  lastSignatureSeenAt?: string | null;
+  driftStatus?: string;
+  selectorSuggestionsJson?: string | null;
 };
 
 type SearchProfile = {
@@ -104,6 +114,32 @@ export const WEBSITE_SEARCH_PROFILES: readonly SearchProfile[] = [
     label: "Shopware product search",
     htmlPattern: /shopware|data-shopware/i,
     templates: ["/search?search={query}"],
+  },
+  {
+    id: "opencart",
+    label: "OpenCart product search",
+    htmlPattern: /route=product\/search|catalog\/view\/theme|OpenCart/i,
+    templates: ["/index.php?route=product/search&search={query}"],
+  },
+  {
+    id: "vtex",
+    label: "VTEX catalog search",
+    htmlPattern: /vtexassets|vtex\.com|__RUNTIME__/i,
+    templates: ["/{query}?_q={query}&map=ft", "/busca?ft={query}"],
+    extraction: { siteType: "javascript", allowRenderedFallback: true },
+  },
+  {
+    id: "wix-stores",
+    label: "Wix Stores search",
+    htmlPattern: /wixstores|static\.wixstatic\.com|wix-code-sdk/i,
+    templates: ["/search-results?q={query}"],
+    extraction: { siteType: "javascript" },
+  },
+  {
+    id: "squarespace-commerce",
+    label: "Squarespace Commerce search",
+    htmlPattern: /static1\.squarespace\.com|squarespace-cdn\.com/i,
+    templates: ["/search?query={query}"],
   },
 ];
 
@@ -194,7 +230,42 @@ function extractionFromCustomProfile(profile: CustomSearchProfile): StoreExtract
     jsonLdCurrencyFields: splitProfileList(profile.jsonLdCurrencyFields),
     blockPatterns: splitProfileList(profile.blockPatterns),
     allowRenderedFallback: profile.allowRenderedFallback,
+    siteType: profile.siteType,
+    timeoutMs: profile.timeoutMs ?? undefined,
+    maxPageBytes: profile.maxPageBytes ?? undefined,
+    retryBudget: profile.retryBudget ?? undefined,
   });
+}
+
+export function profileFingerprint(profile: Pick<CustomSearchProfile, "hostname" | "htmlSignature" | "searchUrlTemplate" | "productSelector" | "eanSelector" | "priceSelector" | "jsonLdEanFields" | "jsonLdPriceFields" | "jsonLdCurrencyFields">) {
+  return contentFingerprint(JSON.stringify([
+    profile.hostname, profile.htmlSignature, profile.searchUrlTemplate, profile.productSelector,
+    profile.eanSelector, profile.priceSelector, profile.jsonLdEanFields,
+    profile.jsonLdPriceFields, profile.jsonLdCurrencyFields,
+  ]));
+}
+
+export function detectCommerceSignature(html: string) {
+  const candidates = [
+    ["shopify", /cdn\.shopify\.com|Shopify\.(?:theme|routes)|myshopify\.com/i],
+    ["woocommerce", /woocommerce|wp-content\/plugins\/woocommerce/i],
+    ["magento", /Magento_[A-Za-z]+|mage\/cookies|\/static\/version\d+/i],
+    ["prestashop", /prestashop/i],
+    ["bigcommerce", /bigcommerce\.com|stencilUtils/i],
+    ["shopware", /shopware|data-shopware/i],
+    ["vtex", /vtexassets|__RUNTIME__/i],
+    ["wix-stores", /wixstores|static\.wixstatic\.com/i],
+  ] as const;
+  return candidates.find(([, pattern]) => pattern.test(html))?.[0];
+}
+
+export function suggestProfileRepairs(html: string, profile: Pick<CustomSearchProfile, "htmlSignature" | "productSelector" | "eanSelector" | "priceSelector">) {
+  const signatureMatched = !profile.htmlSignature || html.toLowerCase().includes(profile.htmlSignature.toLowerCase());
+  return {
+    signatureMatched,
+    detectedPlatform: detectCommerceSignature(html),
+    selectorSuggestions: suggestSelectors(html).filter((selector) => ![profile.productSelector, profile.eanSelector, profile.priceSelector].includes(selector)),
+  };
 }
 
 function splitProfileList(value: string | undefined) {

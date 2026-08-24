@@ -1,4 +1,4 @@
-import type { PriceSource, ScraperConfidence, StoreExtractionProfile } from "./scraper-types.ts";
+import type { ConfidenceScores, PriceSource, ScraperConfidence, StoreExtractionProfile } from "./scraper-types.ts";
 
 export type ExtractedProductMatch = {
   url: string;
@@ -13,6 +13,7 @@ export type ExtractedProductMatch = {
   structuredExactEan: boolean;
   canonicalUrl: string;
   confidence: ScraperConfidence;
+  confidenceScores: ConfidenceScores;
   score: number;
 };
 
@@ -26,9 +27,12 @@ type StructuredCandidate = {
 export function extractProductMatch(html: string, pageUrl: string, productName: string, ean: string, profile?: StoreExtractionProfile): ExtractedProductMatch {
   const scopedHtml = profile?.productSelector ? findSimpleSelectorHtml(html, profile.productSelector) || html : html;
   const visibleText = stripHtml(scopedHtml).replace(/\s+/g, " ").trim();
-  const pageTitle = extractMeta(html, "og:title") || extractTag(html, "h1") || extractTag(html, "title") || productName;
+  const pageTitle = extractMeta(html, "og:title") || extractTag(html, "h1") || extractTag(html, "title") || "";
   const profileEan = profile?.eanSelector ? findSimpleSelectorText(html, profile.eanSelector) : undefined;
-  const pageEanMatch = containsBarcode(visibleText, ean) || containsBarcode(html, ean) || Boolean(profileEan && containsBarcode(profileEan, ean));
+  // Raw markup can echo the requested barcode in a query URL, hidden input, or
+  // script. Only rendered text, explicit selectors, and structured product
+  // identifiers count as identity evidence.
+  const pageEanMatch = containsBarcode(visibleText, ean) || Boolean(profileEan && containsBarcode(profileEan, ean));
   const pageNameScore = scoreName(productName, `${pageTitle} ${visibleText.slice(0, 120_000)}`);
   const structuredCandidates = extractStructuredCandidates(html, productName, ean, pageEanMatch, profile);
   const structured = structuredCandidates.sort((a, b) => b.score - a.score)[0];
@@ -48,16 +52,24 @@ export function extractProductMatch(html: string, pageUrl: string, productName: 
   if (profilePrice && (!selectedPrice || profilePrice.score > selectedPrice.score)) selectedPrice = profilePrice;
   if (htmlPrice && (!selectedPrice || (identityEanMatch && htmlPrice.score > selectedPrice.score))) selectedPrice = htmlPrice;
 
-  const availability = structured?.availability || extractMeta(html, "product:availability") || extractMeta(html, "og:availability");
+  const availability = structured?.availability || extractMeta(html, "product:availability") || extractMeta(html, "og:availability") || extractVisibleAvailability(scopedHtml);
   const inStock = availability
-    ? /out\s*of\s*stock|sold\s*out|unavailable|discontinued/i.test(availability) ? false
-      : /in\s*stock|available|preorder|limitedavailability/i.test(availability) ? true : undefined
+    ? /out\s*of\s*stock|sold\s*out|not\s+available|unavailable|discontinued|ni\s+na\s+zalogi|razprodano/i.test(availability) ? false
+      : /in\s*stock|available|preorder|limitedavailability|na\s+zalogi|dobavljivo/i.test(availability) ? true : undefined
     : undefined;
   const title = structured?.name || pageTitle;
   const structuredUrl = safeResolveUrl(structured?.url, pageUrl);
   const canonicalUrl = extractCanonicalUrl(html, pageUrl) || (sameSiteUrl(structuredUrl, pageUrl) ? structuredUrl : pageUrl);
   const resolvedUrl = canonicalUrl;
-  const score = (identityEanMatch ? 150 : 0) + identityNameScore * 50 + (selectedPrice ? 20 : 0) + (structured ? 12 : 0);
+  const confidenceScores = confidenceScoresFor({
+    exactEan: identityEanMatch,
+    structuredExactEan: structuredCandidates.some((candidate) => candidate.exactEan),
+    nameScore: identityNameScore,
+    price: selectedPrice,
+    structuredProduct: structuredCandidates.length > 0,
+    profilePrice: Boolean(profilePrice && profilePrice === selectedPrice),
+  });
+  const score = confidenceScores.overall * 3 + (structured ? 12 : 0);
 
   return {
     url: resolvedUrl,
@@ -71,7 +83,8 @@ export function extractProductMatch(html: string, pageUrl: string, productName: 
     structuredProduct: structuredCandidates.length > 0,
     structuredExactEan: structuredCandidates.some((candidate) => candidate.exactEan),
     canonicalUrl,
-    confidence: confidenceFor({ exactEan: identityEanMatch, structuredExactEan: structuredCandidates.some((candidate) => candidate.exactEan), nameScore: identityNameScore, price: selectedPrice }),
+    confidence: confidenceFor(confidenceScores),
+    confidenceScores,
     score,
   };
 }
@@ -79,6 +92,22 @@ export function extractProductMatch(html: string, pageUrl: string, productName: 
 function extractStructuredCandidates(html: string, productName: string, ean: string, pageEanMatch: boolean, profile?: StoreExtractionProfile) {
   const candidates: StructuredCandidate[] = [];
   const scripts = html.matchAll(/<script\b[^>]*type=["']application\/ld\+json(?:;[^"']*)?["'][^>]*>([\s\S]*?)<\/script>/gi);
+  const documents: unknown[] = [];
+  const graph = new Map<string, JsonRecord>();
+  const collect = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) { value.forEach(collect); return; }
+    const item = value as JsonRecord;
+    if (typeof item["@id"] === "string") graph.set(item["@id"], item);
+    Object.values(item).forEach(collect);
+  };
+  for (const match of scripts) {
+    try {
+      const document = JSON.parse(decodeEntities(match[1]).trim());
+      documents.push(document);
+      collect(document);
+    } catch { /* ignore malformed JSON-LD */ }
+  }
   const visit = (value: unknown) => {
     if (!value || typeof value !== "object") return;
     if (Array.isArray(value)) { value.forEach(visit); return; }
@@ -93,7 +122,11 @@ function extractStructuredCandidates(html: string, productName: string, ean: str
       const exactEan = identifiers.includes(ean);
       const name = typeof item.name === "string" ? decodeEntities(item.name).trim() : undefined;
       const nameScore = scoreName(productName, name || JSON.stringify(item).slice(0, 10_000));
-      const offer = chooseOffer(item.offers);
+      const offers = (Array.isArray(item.offers) ? item.offers : [item.offers]).map((candidate) => {
+        const record = asRecord(candidate);
+        return record && typeof record["@id"] === "string" ? graph.get(record["@id"]) ?? record : candidate;
+      });
+      const offer = chooseOffer(offers);
       const price = configuredPrice(item, offer, profile?.jsonLdPriceFields) ?? (offer ? extractOfferPrice(offer) : undefined);
       const currency = configuredCurrency(item, offer, profile?.jsonLdCurrencyFields) ?? (offer ? firstString(offer.priceCurrency, asRecord(offer.priceSpecification)?.priceCurrency) : undefined);
       const availability = offer ? firstString(offer.availability) : undefined;
@@ -103,9 +136,7 @@ function extractStructuredCandidates(html: string, productName: string, ean: str
     }
     Object.values(item).forEach(visit);
   };
-  for (const match of scripts) {
-    try { visit(JSON.parse(decodeEntities(match[1]).trim())); } catch { /* ignore malformed JSON-LD */ }
-  }
+  documents.forEach(visit);
   return candidates;
 }
 
@@ -153,7 +184,7 @@ function offerScore(offer: JsonRecord) {
 
 function extractOfferPrice(offer: JsonRecord) {
   const specification = asRecord(offer.priceSpecification);
-  const raw = offer.price ?? specification?.price ?? offer.lowPrice;
+  const raw = offer.salePrice ?? offer.currentPrice ?? offer.price ?? specification?.price ?? offer.lowPrice;
   return raw == null ? undefined : parsePriceCents(String(raw));
 }
 
@@ -185,6 +216,11 @@ function extractHtmlPriceCandidates(html: string, visibleText: string, productNa
   for (const property of ["product:price:amount", "og:price:amount"]) {
     const value = extractMeta(html, property);
     if (value) push(value, 115, "product-meta", property);
+  }
+
+  for (const property of ["twitter:data1", "price", "sale_price", "product:sale_price:amount"]) {
+    const value = extractMeta(html, property);
+    if (value) push(value, /sale/i.test(property) ? 142 : 82, "product-meta", property);
   }
 
   for (const match of html.matchAll(/<(meta|link|input)\b([^>]*?(?:itemprop=["']price["']|data-(?:product-)?price\b|property=["'](?:product|og):price:amount["'])[^>]*)>/gi)) {
@@ -284,10 +320,36 @@ function scoreName(expected: string, candidate: string) {
   return tokens.filter(token => haystack.includes(token)).length / tokens.length;
 }
 
-function confidenceFor(input: { exactEan: boolean; structuredExactEan: boolean; nameScore: number; price?: PriceCandidate }) : ScraperConfidence {
-  if (input.structuredExactEan && input.price?.source === "structured") return "high";
-  if (input.exactEan && input.price) return "medium";
-  return input.nameScore >= 0.9 && input.price ? "low" : "low";
+function confidenceScoresFor(input: {
+  exactEan: boolean;
+  structuredExactEan: boolean;
+  nameScore: number;
+  price?: PriceCandidate;
+  structuredProduct: boolean;
+  profilePrice: boolean;
+}): ConfidenceScores {
+  const ean = input.structuredExactEan ? 100 : input.exactEan ? 88 : 0;
+  const name = Math.round(Math.max(0, Math.min(1, input.nameScore)) * 100);
+  const price = !input.price ? 0 : Math.max(35, Math.min(100, Math.round((input.price.score - 45) / 2)));
+  const source = sourceConfidence(input.price?.source, input.structuredProduct, input.profilePrice);
+  const overall = Math.round(ean * 0.42 + name * 0.22 + price * 0.22 + source * 0.14);
+  return { ean, name, price, source, overall };
+}
+
+function sourceConfidence(source: PriceSource | undefined, structuredProduct: boolean, profilePrice: boolean) {
+  if (source === "structured") return 98;
+  if (profilePrice || source === "profile-selector") return 90;
+  if (source === "product-meta") return 82;
+  if (source === "product-element") return 72;
+  if (source === "ean-context") return 62;
+  if (source === "name-context") return 48;
+  return structuredProduct ? 40 : 20;
+}
+
+function confidenceFor(scores: ConfidenceScores): ScraperConfidence {
+  if (scores.overall >= 86 && scores.ean >= 88 && scores.price >= 70 && scores.source >= 95) return "high";
+  if (scores.overall >= 68 && scores.price >= 45) return "medium";
+  return "low";
 }
 
 function containsBarcode(value: string, ean: string) {
@@ -376,11 +438,23 @@ function parseAttributes(fragment: string) {
 function detectCurrency(value: string) {
   if (/€|\bEUR\b/i.test(value)) return "EUR";
   if (/£|\bGBP\b/i.test(value)) return "GBP";
+  if (/\bNOK\b/i.test(value)) return "NOK";
+  if (/\bDKK\b/i.test(value)) return "DKK";
+  if (/¥|\bJPY\b/i.test(value)) return "JPY";
+  if (/₹|\bINR\b/i.test(value)) return "INR";
+  if (/\bzł\b/i.test(value)) return "PLN";
+  if (/€|\bEUR\b/i.test(value)) return "EUR";
+  if (/£|\bGBP\b/i.test(value)) return "GBP";
   if (/\bCHF\b/i.test(value)) return "CHF";
   if (/\bPLN\b|\bzł\b/i.test(value)) return "PLN";
   if (/\bSEK\b|\bkr\b/i.test(value)) return "SEK";
   if (/\$|\bUSD\b/i.test(value)) return "USD";
   return undefined;
+}
+
+function extractVisibleAvailability(html: string) {
+  const text = stripHtml(html).replace(/\s+/g, " ").slice(0, 160_000);
+  return text.match(/\b(?:out of stock|sold out|not available|unavailable|ni na zalogi|razprodano|in stock|available|na zalogi|dobavljivo)\b/i)?.[0];
 }
 
 function normalizeCurrency(value?: string) {

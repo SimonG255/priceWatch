@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import writeXlsxFile from "write-excel-file";
 import { createClient as createSupabaseClient } from "../../lib/supabase/client";
+import PricingIntelligence from "./PricingIntelligence";
 
 type IconName = "grid" | "box" | "settings" | "plus" | "search" | "bolt" | "external" | "menu" | "close" | "upload" | "download" | "refresh" | "trash" | "file";
 type Product = {
@@ -11,6 +12,7 @@ type Product = {
   status: "queued" | "searching" | "found" | "not_found" | "blocked" | "unavailable" | "needs_review" | "error";
   statusMessage: string; matchedUrl: string | null; resultTitle: string | null; priceCents: number | null;
   currency: string | null; inStock: boolean | null; matchType: string | null; confidence: string | null; evidenceJson: string | null; lastCheckedAt: string | null; createdAt: string;
+  reasonCode?: string | null; failureClass?: string | null; challengeType?: string | null; confidenceScoresJson?: string | null; lastDurationMs?: number | null;
 };
 type Website = { id: string; url: string; createdAt: string };
 type ProductDraft = { id: string; productName: string; ean: string; sku: string };
@@ -65,6 +67,11 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       .catch(err => setError(err.message)).finally(() => setLoading(false));
   }, []);
 
+  async function refreshProducts() {
+    const data = await jsonRequest<{ products: Product[] }>("/api/products");
+    setProducts(data.products);
+  }
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return needle ? products.filter(product => `${product.productName} ${product.ean} ${product.websiteUrl} ${product.sku}`.toLowerCase().includes(needle)) : products;
@@ -118,8 +125,9 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
   }
 
   async function scanMany(items: Product[], setProgress: (message: string) => void) {
-    for (let index = 0; index < items.length; index += 3) {
-      const batch = items.slice(index, index + 3);
+    const ordered = fairProductOrder(items);
+    for (let index = 0; index < ordered.length; index += 3) {
+      const batch = ordered.slice(index, index + 3);
       setProgress(`Searching ${Math.min(index + 3, items.length)} of ${items.length} product-website combinations…`);
       await Promise.all(batch.map(product => scanOne(product.id, true)));
     }
@@ -257,6 +265,8 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
 
       <section className="search-stats"><article><span>Products</span><b>{products.length}</b><small>{Math.max(0, planLimit-products.length).toLocaleString()} plan slots left</small></article><article><span>Matches found</span><b>{foundCount}</b><small>EAN or name + price</small></article><article><span>Prices captured</span><b>{pricedCount}</b><small>Latest public results</small></article><article><span>Waiting</span><b>{waitingCount}</b><small>Queued or searching</small></article></section>
 
+      <PricingIntelligence products={products} onProductsChanged={refreshProducts}/>
+
       {error && <div className="dashboard-error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><Icon name="close" size={15}/></button></div>}
 
       <section className="product-list-card" id="product-list">
@@ -273,4 +283,20 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
     </div></div>}
     {toast && <div className="toast"><Icon name="bolt" size={17}/>{toast}</div>}
   </main>;
+}
+
+function fairProductOrder(items: Product[]) {
+  const queues = new Map<string, Product[]>();
+  for (const item of items) {
+    const hostname = new URL(item.websiteUrl).hostname.toLowerCase().replace(/^www\./, "");
+    queues.set(hostname, [...(queues.get(hostname) ?? []), item]);
+  }
+  const ordered: Product[] = [];
+  while ([...queues.values()].some((queue) => queue.length)) {
+    for (const queue of queues.values()) {
+      const item = queue.shift();
+      if (item) ordered.push(item);
+    }
+  }
+  return ordered;
 }

@@ -22,6 +22,20 @@
       "when": 1787575997756,
       "tag": "0002_scraper_reliability",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787587903487,
+      "tag": "0003_familiar_hercules",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787588268004,
+      "tag": "0004_spicy_terrax",
+      "breakpoints": true
     }
   ]
 }
