@@ -29,6 +29,15 @@ test("uses a known domain-specific search URL", () => {
   assert.equal(candidates[0].url, "https://www.amazon.de/s?k=5099206123456");
 });
 
+test("uses Jager's published search route without guessed generic fallbacks", () => {
+  const candidates = buildSearchCandidates(new URL("https://www.trgovinejager.com/"), ["8806095539737"]);
+  assert.deepEqual(candidates, [{
+    profileId: "trgovine-jager",
+    profileLabel: "Trgovine Jager search",
+    url: "https://www.trgovinejager.com/iskalnik/?isci=8806095539737",
+  }]);
+});
+
 test("prioritizes a known domain profile over a published search form", () => {
   const html = '<form action="/find"><input type="search" name="q"></form>';
   const candidates = buildSearchCandidates(new URL("https://www.amazon.de/"), ["5099206123456"], html);
@@ -44,6 +53,19 @@ test("uses an admin-defined HTML signature and search URL before a discovered fo
   assert.equal(candidates[0].profileId, "custom-acme");
   assert.equal(candidates[0].url, "https://store.example/catalog?term=12345678");
   assert.equal(candidates[1].profileId, "form-1");
+  assert.equal(candidates.some((candidate) => candidate.profileId === "generic"), false);
+});
+
+test("uses a matching admin hostname profile instead of generic search URLs", () => {
+  const candidates = buildSearchCandidates(new URL("https://www.trgovinejager.com/"), ["8806095539737"], undefined, [{
+    id: "jager", label: "Jager search", hostname: "trgovinejager.com", htmlSignature: "", searchUrlTemplate: "/iskalnik/?isci={query}",
+  }]);
+
+  assert.deepEqual(candidates, [{
+    profileId: "custom-jager",
+    profileLabel: "Jager search",
+    url: "https://www.trgovinejager.com/iskalnik/?isci=8806095539737",
+  }]);
 });
 
 test("requires every configured custom-profile match condition", () => {

@@ -18,14 +18,24 @@ type SearchProfile = {
   templates: string[];
   hostPattern?: RegExp;
   htmlPattern?: RegExp;
+  suppressesGenericFallback?: boolean;
 };
 
 /**
  * Search URL profiles are kept in one list so a confirmed store-specific route
- * can be added without changing the crawler. Confirmed domain and platform
- * profiles are tried before discovered forms, with generic URLs kept last.
+ * can be added without changing the crawler. A matching admin profile owns the
+ * generic-search choice, so its configured route is not diluted by guessed URLs.
  */
 export const WEBSITE_SEARCH_PROFILES: readonly SearchProfile[] = [
+  {
+    id: "trgovine-jager",
+    label: "Trgovine Jager search",
+    hostPattern: /(^|\.)trgovinejager\.com$/i,
+    templates: ["/iskalnik/?isci={query}"],
+    // This is Jager's published storefront-search route. Trying guessed
+    // /search?... URLs after it adds noise and can trigger extra rate limits.
+    suppressesGenericFallback: true,
+  },
   {
     id: "amazon",
     label: "Amazon search",
@@ -96,6 +106,7 @@ const GENERIC_SEARCH_PROFILE: SearchProfile = {
 export function buildSearchCandidates(root: URL, queries: string[], html?: string, customProfiles: CustomSearchProfile[] = []): SearchCandidate[] {
   const candidates: SearchCandidate[] = [];
   const seen = new Set<string>();
+  let suppressesGenericFallback = false;
   const add = (candidate: SearchCandidate) => {
     const normalized = normalizeCandidate(candidate.url);
     if (!normalized || seen.has(normalized) || !sameStoreHostname(new URL(normalized).hostname, root.hostname)) return;
@@ -107,21 +118,25 @@ export function buildSearchCandidates(root: URL, queries: string[], html?: strin
     const hostMatches = !profile.hostname || sameStoreHostname(root.hostname, profile.hostname);
     const htmlMatches = !profile.htmlSignature || Boolean(html?.toLowerCase().includes(profile.htmlSignature.toLowerCase()));
     if (!hostMatches || !htmlMatches) continue;
+    const candidateCount = candidates.length;
     addProfileCandidates(add, root, queries, { id: `custom-${profile.id}`, label: profile.label, templates: [profile.searchUrlTemplate] });
+    suppressesGenericFallback ||= candidates.length > candidateCount;
   }
 
   for (const profile of WEBSITE_SEARCH_PROFILES) {
     const matchesHost = profile.hostPattern?.test(root.hostname) ?? false;
     const matchesHtml = html ? profile.htmlPattern?.test(html) ?? false : false;
     if (!matchesHost && !matchesHtml) continue;
+    const candidateCount = candidates.length;
     addProfileCandidates(add, root, queries, profile);
+    if (profile.suppressesGenericFallback && candidates.length > candidateCount) suppressesGenericFallback = true;
   }
 
   if (html) {
     for (const candidate of discoverSearchForms(root, queries, html)) add(candidate);
   }
 
-  addProfileCandidates(add, root, queries, GENERIC_SEARCH_PROFILE);
+  if (!suppressesGenericFallback) addProfileCandidates(add, root, queries, GENERIC_SEARCH_PROFILE);
   return candidates;
 }
 

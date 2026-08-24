@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractAiCandidateUrls } from "../lib/ai-product-discovery.ts";
+import { extractAiCandidateUrls, extractAiReviewDecision } from "../lib/ai-product-discovery.ts";
 
 test("keeps only same-store URLs returned by AI web search", () => {
   const payload = { output: [{ type: "web_search_call", action: { sources: [
@@ -23,4 +23,23 @@ test("accepts citation URLs but rejects malformed AI output", () => {
   ] }] }] };
   assert.deepEqual(extractAiCandidateUrls(payload, new URL("https://store.example")), ["https://store.example/product/123"]);
   assert.deepEqual(extractAiCandidateUrls(null, new URL("https://store.example")), []);
+});
+
+test("keeps only same-store replacement URLs from a structured AI review", () => {
+  const payload = { output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+    verdict: "retry",
+    confirmedUrl: null,
+    retryUrls: ["https://shop.example/products/exact#details", "https://evil.example/products/fake", "not a url"],
+    issues: ["wrong_product", "ambiguous_price"],
+  }) }] }] };
+  assert.deepEqual(extractAiReviewDecision(payload, new URL("https://shop.example")), {
+    verdict: "retry",
+    issues: ["wrong_product", "ambiguous_price"],
+    urls: ["https://shop.example/products/exact"],
+  });
+});
+
+test("rejects malformed structured AI review output", () => {
+  const payload = { output_text: JSON.stringify({ verdict: "confirmed", confirmedUrl: "https://shop.example/p", retryUrls: [] }) };
+  assert.equal(extractAiReviewDecision(payload, new URL("https://shop.example")), undefined);
 });
