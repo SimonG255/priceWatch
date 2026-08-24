@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../db";
 import { monitoredProducts, scraperSchedules } from "../../../db/schema";
 import { getCurrentUserEmail } from "../../../lib/current-user";
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       if (!productIds.length) throw new Error("Select at least one product for this schedule.");
       const owned = await getDb().select({ id: monitoredProducts.id }).from(monitoredProducts).where(and(
         eq(monitoredProducts.ownerEmail, ownerEmail),
-        inArray(monitoredProducts.id, productIds),
+        selectedProductIds(productIds),
       ));
       if (owned.length !== productIds.length) throw new Error("One or more selected products are unavailable.");
     }
@@ -63,6 +63,10 @@ function publicSchedule(schedule: typeof scraperSchedules.$inferSelect) {
 }
 
 function cleanName(value: unknown) { return typeof value === "string" ? value.trim().slice(0, 100) : ""; }
+
+function selectedProductIds(ids: string[]) {
+  return sql`${monitoredProducts.id} IN (SELECT CAST(value AS TEXT) FROM json_each(${JSON.stringify(ids)}))`;
+}
 
 function validateTimeZone(value: string) {
   try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return value; } catch { return "UTC"; }

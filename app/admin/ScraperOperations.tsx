@@ -22,11 +22,14 @@ const REASONS: Record<string, string> = {
   cloudflare: "Cloudflare challenge", captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login wall", js_challenge: "JavaScript challenge",
   wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", rate_limited: "Rate limited", timeout: "Timed out",
   response_too_large: "Page too large", robots_disallowed: "Robots/policy block", known_bad_pattern: "Known bad page", profile_drift: "Profile drift",
+  stale_result: "Superseded scan",
 };
 
 export default function ScraperOperations() {
   const [data, setData] = useState<Operations | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [retestProcessedIds, setRetestProcessedIds] = useState<string[]>([]);
+  const [retestLastHostname, setRetestLastHostname] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [badHost, setBadHost] = useState("");
@@ -51,10 +54,36 @@ export default function ScraperOperations() {
   async function retestSelected() {
     setBusy(true); setNotice("Retesting selected domains with live cooldowns and fair ordering…");
     try {
-      const response = await fetch("/api/admin/scraper/retest", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ hostnames: selected, limit: 25 }) });
-      const body = await response.json() as { queued?: number; completed?: unknown[]; error?: string };
-      if (!response.ok) throw new Error(body.error || "Retest failed.");
-      setNotice(`${body.queued || 0} checks completed or respected an active cooldown.`); setSelected([]); setData(await load());
+      let processedIds = retestProcessedIds;
+      let completed = 0;
+      let remaining = 0;
+      let complete = false;
+      let lastHostname = retestLastHostname;
+      for (let requestIndex = 0; requestIndex < 25; requestIndex += 1) {
+        const response = await fetch("/api/admin/scraper/retest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostnames: selected, processedIds, lastHostname }),
+        });
+        const body = await response.json() as { completed?: unknown[]; continuation?: string[]; complete?: boolean; remaining?: number; lastHostname?: string; error?: string };
+        if (!response.ok) throw new Error(body.error || "Retest failed.");
+        completed += body.completed?.length ?? 0;
+        processedIds = body.continuation ?? processedIds;
+        remaining = body.remaining ?? 0;
+        complete = body.complete === true;
+        lastHostname = body.lastHostname ?? lastHostname;
+        setNotice(`Retested ${completed} product${completed === 1 ? "" : "s"} in bounded requests…`);
+        if (complete) break;
+      }
+      if (complete) {
+        setRetestProcessedIds([]); setRetestLastHostname(""); setSelected([]);
+        setNotice(`${processedIds.length} checks completed or respected an active cooldown.`);
+      } else {
+        setRetestProcessedIds(processedIds);
+        setRetestLastHostname(lastHostname);
+        setNotice(`${completed} more checks completed; ${remaining} matching products remain. Continue when ready.`);
+      }
+      setData(await load());
     } catch (error) { setNotice(error instanceof Error ? error.message : "Retest failed."); }
     finally { setBusy(false); }
   }
@@ -102,9 +131,9 @@ export default function ScraperOperations() {
     </section>
 
     <section className="admin-card operations-console">
-      <div className="admin-intro operations-title"><div><span className="editor-mode">LIVE OPERATIONS</span><h2>Domain health and bulk retesting</h2><p>Operational success includes completed “not found” checks. A verified match is tracked separately from website availability.</p></div><button disabled={busy || !selected.length} onClick={retestSelected}>Retest selected ({selected.length})</button></div>
+      <div className="admin-intro operations-title"><div><span className="editor-mode">LIVE OPERATIONS</span><h2>Domain health and bulk retesting</h2><p>Operational success includes completed “not found” checks. A verified match is tracked separately from website availability.</p></div><button disabled={busy || !selected.length} onClick={retestSelected}>{retestProcessedIds.length ? "Continue retest" : "Retest selected"} ({selected.length})</button></div>
       <div className="admin-table-wrap"><table><thead><tr><th/><th>Domain</th><th>Health</th><th>Latest reason</th><th>Failures</th><th>Latency</th><th>Cooldown</th></tr></thead><tbody>{data.domains.map((domain) => <tr key={domain.hostname}>
-        <td><input type="checkbox" aria-label={`Select ${domain.hostname}`} checked={selected.includes(domain.hostname)} onChange={() => setSelected((current) => current.includes(domain.hostname) ? current.filter((item) => item !== domain.hostname) : [...current, domain.hostname])}/></td>
+        <td><input type="checkbox" aria-label={`Select ${domain.hostname}`} checked={selected.includes(domain.hostname)} onChange={() => { setRetestProcessedIds([]); setRetestLastHostname(""); setSelected((current) => current.includes(domain.hostname) ? current.filter((item) => item !== domain.hostname) : [...current, domain.hostname]); }}/></td>
         <td><code>{domain.hostname}</code><small>{domain.lastCheckedAt ? new Date(domain.lastCheckedAt).toLocaleString() : "Never checked"}</small></td>
         <td><span className={`health-score ${domain.successRate >= .8 ? "healthy" : domain.successRate >= .5 ? "degraded" : "critical"}`}>{percent(domain.successRate)}</span><small>{domain.totalChecks} checks</small></td>
         <td><span className={`health-status ${domain.lastOutcome || "unknown"}`}>{reasonLabel(domain.lastReasonCode || domain.lastOutcome)}</span><small>{domain.failureClass || "no failure"}{domain.lastChallengeType ? ` · ${domain.lastChallengeType}` : ""}</small></td>

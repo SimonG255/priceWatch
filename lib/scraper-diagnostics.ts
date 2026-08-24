@@ -90,7 +90,7 @@ function challenge(type: ChallengeType, message: string): ChallengeClassificatio
 
 export function failureClassFor(reason: ScraperReasonCode): ScraperFailureClass {
   if (reason === "found") return "none";
-  if (["not_found", "wrong_product", "robots_disallowed", "known_bad_pattern", "http_client_error", "login_wall"].includes(reason)) return "permanent";
+  if (["not_found", "wrong_product", "robots_disallowed", "known_bad_pattern", "http_client_error", "login_wall", "stale_result"].includes(reason)) return "permanent";
   return "temporary";
 }
 

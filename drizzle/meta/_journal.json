@@ -36,6 +36,13 @@
       "when": 1787588268004,
       "tag": "0004_spicy_terrax",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1787591279876,
+      "tag": "0005_lonely_silk_fever",
+      "breakpoints": true
     }
   ]
 }

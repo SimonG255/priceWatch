@@ -17,6 +17,7 @@ export type ScraperReasonCode =
   | "robots_disallowed"
   | "known_bad_pattern"
   | "profile_drift"
+  | "stale_result"
   | "cloudflare"
   | "captcha"
   | "bot_wall"

@@ -1,14 +1,13 @@
-import { and, asc, eq, inArray, isNull, lte, or } from "drizzle-orm";
+import { and, asc, count, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../db";
 import { monitoredProducts, scraperSchedules } from "../db/schema";
-import { fairDomainOrder } from "./scraper-diagnostics.ts";
 import { runProductScan } from "./run-product-scan.ts";
 
-// A scan can perform several public fetches and D1 writes. Keeping each Cron
-// slice deliberately small stays inside Worker and D1 invocation budgets while
-// the cursor advances through larger schedules over subsequent ticks.
-const MAX_PRODUCTS_PER_TICK = 2;
-const LEASE_MS = 4 * 60_000;
+// One product per invocation keeps each continuation inside D1's per-request
+// query budget. Larger schedules advance once per minute.
+const MAX_PRODUCTS_PER_TICK = 1;
+const LEASE_MS = 15 * 60_000;
+const LEASE_HEARTBEAT_MS = 60_000;
 
 export async function runScraperSchedule(scheduleId: string, expectedOwnerEmail?: string) {
   await ensureProductsSchema();
@@ -27,7 +26,7 @@ export async function runScraperSchedule(scheduleId: string, expectedOwnerEmail?
   const [schedule] = await db.update(scraperSchedules).set({
     leaseToken,
     leaseUntil: new Date(now.getTime() + LEASE_MS).toISOString(),
-    pendingStartedAt: existing.cursorIndex ? existing.pendingStartedAt : now.toISOString(),
+    pendingStartedAt: existing.pendingStartedAt ?? now.toISOString(),
     revision: existing.revision + 1,
     updatedAt: now.toISOString(),
   }).where(and(
@@ -38,23 +37,29 @@ export async function runScraperSchedule(scheduleId: string, expectedOwnerEmail?
   if (!schedule) return { schedule: existing, outcomes: [], busy: true, complete: false };
 
   const selectedIds = parseIds(schedule.productIdsJson);
-  const productFilters = [eq(monitoredProducts.ownerEmail, schedule.ownerEmail)];
-  if (schedule.targetMode === "selected") {
-    if (!selectedIds.length) return finishSchedule(schedule, leaseToken, {}, [], true);
-    productFilters.push(inArray(monitoredProducts.id, selectedIds));
+  if (schedule.targetMode === "selected" && !selectedIds.length) {
+    return finishSchedule(schedule, leaseToken, {}, [], true);
   }
-  const products = await db.select({ id: monitoredProducts.id, websiteUrl: monitoredProducts.websiteUrl })
+
+  const cycleStartedAt = schedule.pendingStartedAt ?? now.toISOString();
+  const filters = scheduleFilters(schedule.ownerEmail, schedule.targetMode, selectedIds, cycleStartedAt);
+  const [{ remaining }] = await db.select({ remaining: count() }).from(monitoredProducts).where(and(...filters));
+  if (!remaining) return finishSchedule(schedule, leaseToken, parseCounts(schedule.pendingOutcomeJson), [], true);
+
+  const domains = await db.selectDistinct({ hostname: monitoredProducts.hostname }).from(monitoredProducts)
+    .where(and(...filters)).orderBy(asc(monitoredProducts.hostname));
+  const selectedDomain = domains[schedule.cursorIndex % domains.length]?.hostname;
+  const [product] = selectedDomain !== undefined ? await db.select({ id: monitoredProducts.id, websiteUrl: monitoredProducts.websiteUrl })
     .from(monitoredProducts)
-    .where(and(...productFilters))
-    .orderBy(asc(monitoredProducts.createdAt), asc(monitoredProducts.id))
-    .limit(500);
-  const ordered = fairDomainOrder(products, (product) => new URL(product.websiteUrl).hostname);
-  const cursor = Math.min(schedule.cursorIndex, ordered.length);
-  const batch = ordered.slice(cursor, cursor + MAX_PRODUCTS_PER_TICK);
+    .where(and(...filters, eq(monitoredProducts.hostname, selectedDomain)))
+    .orderBy(asc(monitoredProducts.lastCheckedAt), asc(monitoredProducts.createdAt), asc(monitoredProducts.id))
+    .limit(1) : [];
+  if (!product) return finishSchedule(schedule, leaseToken, parseCounts(schedule.pendingOutcomeJson), [], true);
+
   const counts = parseCounts(schedule.pendingOutcomeJson);
   const outcomes: Array<{ id: string; status: string }> = [];
-
-  for (const product of batch) {
+  const heartbeat = startLeaseHeartbeat(schedule, leaseToken);
+  try {
     const outcome = await runProductScan({
       ownerEmail: schedule.ownerEmail,
       productId: product.id,
@@ -64,10 +69,17 @@ export async function runScraperSchedule(scheduleId: string, expectedOwnerEmail?
     const status = "error" in outcome ? "error" : outcome.result.status;
     counts[status] = (counts[status] ?? 0) + 1;
     outcomes.push({ id: product.id, status });
+  } catch (error) {
+    counts.error = (counts.error ?? 0) + 1;
+    outcomes.push({ id: product.id, status: "error" });
+    console.error("Scheduled product scan failed", error instanceof Error ? error.message : "Unknown schedule error");
+  } finally {
+    await heartbeat.stop();
   }
 
-  const nextCursor = cursor + batch.length;
-  return finishSchedule(schedule, leaseToken, counts, outcomes, nextCursor >= ordered.length, nextCursor, ordered.length);
+  const [{ remaining: remainingAfter }] = await db.select({ remaining: count() }).from(monitoredProducts).where(and(...filters));
+  const nextCursor = schedule.cursorIndex + MAX_PRODUCTS_PER_TICK;
+  return finishSchedule(schedule, leaseToken, counts, outcomes, remainingAfter === 0, nextCursor, nextCursor + remainingAfter);
 }
 
 export async function runDueScraperSchedules() {
@@ -83,6 +95,48 @@ export async function runDueScraperSchedules() {
   return 1;
 }
 
+function scheduleFilters(ownerEmail: string, targetMode: string, selectedIds: string[], cycleStartedAt: string) {
+  const filters = [
+    eq(monitoredProducts.ownerEmail, ownerEmail),
+    or(isNull(monitoredProducts.lastCheckedAt), lt(monitoredProducts.lastCheckedAt, cycleStartedAt)),
+  ];
+  if (targetMode === "selected") filters.push(selectedProductIds(selectedIds));
+  return filters;
+}
+
+function selectedProductIds(ids: string[]) {
+  return sql`${monitoredProducts.id} IN (SELECT CAST(value AS TEXT) FROM json_each(${JSON.stringify(ids)}))`;
+}
+
+function startLeaseHeartbeat(schedule: typeof scraperSchedules.$inferSelect, leaseToken: string) {
+  let active = true;
+  let pending = Promise.resolve();
+  const renew = () => {
+    pending = pending.then(async () => {
+      if (!active) return;
+      const now = new Date();
+      const [renewed] = await getDb().update(scraperSchedules).set({
+        leaseUntil: new Date(now.getTime() + LEASE_MS).toISOString(),
+        updatedAt: now.toISOString(),
+      }).where(and(
+        eq(scraperSchedules.id, schedule.id),
+        eq(scraperSchedules.ownerEmail, schedule.ownerEmail),
+        eq(scraperSchedules.leaseToken, leaseToken),
+        eq(scraperSchedules.revision, schedule.revision),
+      )).returning({ id: scraperSchedules.id });
+      if (!renewed) active = false;
+    }).catch((error) => { console.error("Schedule lease renewal failed", error); });
+  };
+  const timer = setInterval(renew, LEASE_HEARTBEAT_MS);
+  return {
+    async stop() {
+      active = false;
+      clearInterval(timer);
+      await pending;
+    },
+  };
+}
+
 async function finishSchedule(
   schedule: typeof scraperSchedules.$inferSelect,
   leaseToken: string,
@@ -93,9 +147,8 @@ async function finishSchedule(
   total = 0,
 ) {
   const now = new Date();
-  const lastOutcome = complete
-    ? (Object.entries(counts).map(([status, count]) => `${count} ${status}`).join(", ") || "No products selected")
-    : `Processing ${nextCursor} of ${total}: ${Object.entries(counts).map(([status, count]) => `${count} ${status}`).join(", ")}`;
+  const summary = Object.entries(counts).map(([status, value]) => `${value} ${status}`).join(", ");
+  const lastOutcome = complete ? (summary || "No products selected") : `Processing ${nextCursor} of ${total}: ${summary}`;
   const [updated] = await getDb().update(scraperSchedules).set({
     lastRunAt: complete ? now.toISOString() : schedule.lastRunAt,
     lastOutcome,
@@ -110,8 +163,18 @@ async function finishSchedule(
     eq(scraperSchedules.id, schedule.id),
     eq(scraperSchedules.ownerEmail, schedule.ownerEmail),
     eq(scraperSchedules.leaseToken, leaseToken),
+    eq(scraperSchedules.revision, schedule.revision),
   )).returning();
-  return { schedule: updated ?? schedule, outcomes, busy: false, complete };
+  if (!updated) return staleScheduleResult(schedule, outcomes);
+  return { schedule: updated, outcomes, busy: false, complete };
+}
+
+async function staleScheduleResult(schedule: typeof scraperSchedules.$inferSelect, outcomes: Array<{ id: string; status: string }>) {
+  const [current] = await getDb().select().from(scraperSchedules).where(and(
+    eq(scraperSchedules.id, schedule.id),
+    eq(scraperSchedules.ownerEmail, schedule.ownerEmail),
+  )).limit(1);
+  return { schedule: current ?? schedule, outcomes, busy: true, complete: false, stale: true };
 }
 
 function parseIds(value: string) {

@@ -23,7 +23,7 @@ type Snapshot = {
   matchedUrl: string; confidenceScores: { ean: number; name: number; price: number; source: number; overall: number };
 };
 type Schedule = {
-  id: string; name: string; cadenceMinutes: number; enabled: boolean; nextRunAt: string;
+  id: string; name: string; targetMode: "all" | "selected"; cadenceMinutes: number; enabled: boolean; nextRunAt: string;
   lastRunAt: string | null; lastOutcome: string | null;
 };
 
@@ -32,6 +32,7 @@ const REASON_LABELS: Record<string, string> = {
   js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence",
   price_missing: "Price missing", response_too_large: "Page too large", robots_disallowed: "Blocked by policy",
   known_bad_pattern: "Known bad page", profile_drift: "Profile drift", rate_limited: "Rate limited", timeout: "Timed out",
+  stale_result: "Superseded scan",
 };
 
 export default function PricingIntelligence({ products, onProductsChanged }: { products: IntelligenceProduct[]; onProductsChanged: () => Promise<void> | void }) {
@@ -95,10 +96,17 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
     setScheduleLoading(true); setNotice("Running the scheduled checks fairly across domains…");
     try {
       const response = await fetch(`/api/schedules/${schedule.id}/run`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
-      const body = await response.json() as { schedule?: Schedule; complete?: boolean; error?: string };
+      const body = await response.json() as { schedule?: Schedule; complete?: boolean; busy?: boolean; stale?: boolean; error?: string };
       if (!response.ok || !body.schedule) throw new Error(body.error || "Schedule could not run.");
       setSchedules((current) => current.map((item) => item.id === schedule.id ? body.schedule! : item));
-      await onProductsChanged(); setNotice(body.complete ? "Scheduled checks completed." : "The first fair batch completed; remaining products will continue automatically on upcoming scheduler ticks.");
+      await onProductsChanged();
+      setNotice(body.busy
+        ? "This schedule is already running; no duplicate scan was started."
+        : body.stale
+          ? "Schedule ownership changed safely. The active scheduler will continue the remaining checks."
+          : body.complete
+            ? "Scheduled checks completed."
+            : "The first fair batch completed; remaining products will continue automatically on upcoming scheduler ticks.");
     } catch (error) { setNotice(error instanceof Error ? error.message : "Schedule could not run."); }
     finally { setScheduleLoading(false); }
   }
@@ -116,7 +124,7 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
       <div className="intelligence-actions"><a href="/api/exports?resource=products&format=csv">Products CSV</a><a href="/api/exports?resource=products&format=json">Products JSON</a><a href="/api/exports?resource=matches&format=csv">Matches CSV</a><a href="/api/exports?resource=price_history&format=csv">History CSV</a><a href="/api/exports?resource=price_history&format=json">History JSON</a></div>
     </div>
     <div className="intelligence-tabs" role="group" aria-label="Pricing intelligence views">
-      {(["compare", "history", "automation"] as const).map((tab) => <button key={tab} aria-pressed={view === tab} className={view === tab ? "active" : ""} onClick={() => { setView(tab); if (tab === "history") setHistoryLoading(true); }}>{tab === "compare" ? "Compare stores" : tab === "history" ? "Price history" : "Scheduled runs"}</button>)}
+      {(["compare", "history", "automation"] as const).map((tab) => <button key={tab} aria-pressed={view === tab} className={view === tab ? "active" : ""} onClick={() => { if (tab === "history" && view !== "history" && selectedHistoryProductId) setHistoryLoading(true); setView(tab); }}>{tab === "compare" ? "Compare stores" : tab === "history" ? "Price history" : "Scheduled runs"}</button>)}
     </div>
 
     {view === "compare" && <div className="compare-grid">
@@ -135,7 +143,7 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
 
     {view === "history" && <div className="history-panel">
       <label><span>Tracked product</span><select value={selectedHistoryProductId} onChange={(event) => { setHistoryLoading(true); setSnapshots([]); setHistoryProductId(event.target.value); }}>{historiedProducts.map((product) => <option key={product.id} value={product.id}>{product.productName} · {new URL(product.websiteUrl).hostname}</option>)}</select></label>
-      {historyLoading ? <div className="intelligence-empty">Loading price history…</div> : !snapshots.length ? <div className="intelligence-empty"><strong>No snapshots yet</strong><span>A snapshot is saved after the next verified price check.</span></div> : <>
+      {!selectedHistoryProductId ? <div className="intelligence-empty"><strong>No tracked history yet</strong><span>Run a product check to create its first observation.</span></div> : historyLoading ? <div className="intelligence-empty">Loading price history…</div> : !snapshots.length ? <div className="intelligence-empty"><strong>No snapshots yet</strong><span>A snapshot is saved after the next verified price check.</span></div> : <>
         {snapshotGroups.map(([currency, currencySnapshots]) => <section className="history-currency" key={currency}><h3>{currency}</h3><div className="history-bars" role="img" aria-label={`${currency} price history with ${currencySnapshots.length} observations`}>{[...currencySnapshots].reverse().map((snapshot) => {
           const prices = currencySnapshots.map((item) => item.priceCents); const min = Math.min(...prices); const max = Math.max(...prices); const height = max === min ? 55 : 18 + (snapshot.priceCents - min) / (max - min) * 70;
           return <i key={snapshot.id} style={{ height: `${height}%` }} title={`${formatMoney(snapshot.priceCents, snapshot.currency)} · ${new Date(snapshot.capturedAt).toLocaleString()}`}/>;
@@ -144,8 +152,8 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
     </div>}
 
     {view === "automation" && <div className="automation-panel">
-      <div className="schedule-create"><div><strong>Fair scheduled monitoring</strong><span>Runs are interleaved across domains and processed in leased batches, so one slow store cannot starve the rest.</span></div><label><span>Frequency</span><select value={cadenceMinutes} onChange={(event) => setCadenceMinutes(Number(event.target.value))}><option value={60}>Every hour</option><option value={360}>Every 6 hours</option><option value={720}>Twice daily</option><option value={1440}>Daily</option><option value={10080}>Weekly</option></select></label><button onClick={createSchedule} disabled={scheduleLoading || !products.length || schedules.some((schedule) => schedule.name === "All product monitoring")}>{schedules.some((schedule) => schedule.name === "All product monitoring") ? "Schedule exists" : "Create schedule"}</button></div>
-      <div className="schedule-list">{schedules.map((schedule) => <article key={schedule.id}><div><strong>{schedule.name}</strong><span>{schedule.lastOutcome || "Not run yet"}</span><small>Next {new Date(schedule.nextRunAt).toLocaleString()}</small></div><button className={schedule.enabled ? "enabled" : ""} aria-pressed={schedule.enabled} onClick={() => toggleSchedule(schedule)}>{schedule.enabled ? "Enabled" : "Paused"}</button><button onClick={() => runSchedule(schedule)} disabled={scheduleLoading}>Run now</button></article>)}</div>
+      <div className="schedule-create"><div><strong>Fair scheduled monitoring</strong><span>Runs are interleaved across domains and processed in leased batches, so one slow store cannot starve the rest.</span></div><label><span>Frequency</span><select value={cadenceMinutes} onChange={(event) => setCadenceMinutes(Number(event.target.value))}><option value={60}>Every hour</option><option value={360}>Every 6 hours</option><option value={720}>Twice daily</option><option value={1440}>Daily</option><option value={10080}>Weekly</option></select></label><button onClick={createSchedule} disabled={scheduleLoading || !products.length || schedules.some((schedule) => schedule.targetMode === "all")}>{schedules.some((schedule) => schedule.targetMode === "all") ? "Schedule exists" : "Create schedule"}</button></div>
+      <div className="schedule-list">{schedules.map((schedule) => <article key={schedule.id}><div><strong>{schedule.name}</strong><span>{schedule.lastOutcome || "Not run yet"}</span><small>Next {new Date(schedule.nextRunAt).toLocaleString()}</small></div><button className={schedule.enabled ? "enabled" : ""} aria-label={`${schedule.enabled ? "Pause" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => toggleSchedule(schedule)}>{schedule.enabled ? "Enabled" : "Paused"}</button><button aria-label={`Run ${schedule.name} now`} onClick={() => runSchedule(schedule)} disabled={scheduleLoading}>Run now</button></article>)}</div>
     </div>}
     {notice && <p className="intelligence-notice" aria-live="polite">{notice}</p>}
     {products.some((product) => product.reasonCode && product.reasonCode !== "found") && <div className="reason-summary">Latest review reasons: {[...new Set(products.map((product) => product.reasonCode).filter((reason): reason is string => Boolean(reason) && reason !== "found"))].slice(0, 6).map((reason) => <span key={reason}>{REASON_LABELS[reason] || reason.replaceAll("_", " ")}</span>)}</div>}

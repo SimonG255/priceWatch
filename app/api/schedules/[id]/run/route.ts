@@ -7,5 +7,9 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
   const { id } = await params;
   const outcome = await runScraperSchedule(id, ownerEmail);
   if (!outcome) return Response.json({ error: "Schedule not found." }, { status: 404 });
-  return Response.json(outcome, { status: outcome.complete ? 200 : 202 });
+  const schedule: Partial<typeof outcome.schedule> = { ...outcome.schedule };
+  delete schedule.productIdsJson;
+  delete schedule.leaseToken;
+  delete schedule.pendingOutcomeJson;
+  return Response.json({ ...outcome, schedule }, { status: outcome.complete ? 200 : 202 });
 }

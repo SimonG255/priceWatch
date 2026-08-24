@@ -1,267 +1,352 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { boolean, index, integer, pgTable, primaryKey, text, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const monitoredProducts = sqliteTable("monitored_products", {
-  id: text("id").primaryKey(),
-  ownerEmail: text("owner_email").notNull(),
-  websiteUrl: text("website_url").notNull(),
-  productName: text("product_name").notNull(),
-  ean: text("ean").notNull(),
-  sku: text("sku").notNull().default(""),
-  notes: text("notes").notNull().default(""),
-  status: text("status").notNull().default("queued"),
-  statusMessage: text("status_message").notNull().default("Ready to search"),
-  matchedUrl: text("matched_url"),
-  resultTitle: text("result_title"),
-  priceCents: integer("price_cents"),
-  currency: text("currency"),
-  inStock: integer("in_stock", { mode: "boolean" }),
-  matchType: text("match_type"),
-  confidence: text("confidence"),
-  evidenceJson: text("evidence_json"),
-  pageEtag: text("page_etag"),
-  pageLastModified: text("page_last_modified"),
-  lastHttpStatus: integer("last_http_status"),
-  reasonCode: text("reason_code"),
-  failureClass: text("failure_class"),
-  challengeType: text("challenge_type"),
-  confidenceScoresJson: text("confidence_scores_json"),
-  lastDurationMs: integer("last_duration_ms"),
-  lastContentHash: text("last_content_hash"),
-  lastScanId: text("last_scan_id"),
-  lastCheckedAt: text("last_checked_at"),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("monitored_products_owner_idx").on(table.ownerEmail),
-  index("monitored_products_owner_ean_offer_idx").on(table.ownerEmail, table.ean, table.status, table.currency, table.inStock, table.priceCents),
-  uniqueIndex("monitored_products_owner_url_ean_uidx").on(table.ownerEmail, table.websiteUrl, table.ean),
-]);
+export const monitoredProducts = pgTable(
+  "monitored_products",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    websiteUrl: text("website_url").notNull(),
+    hostname: text("hostname").notNull().default(""),
+    productName: text("product_name").notNull(),
+    ean: text("ean").notNull(),
+    sku: text("sku").notNull().default(""),
+    notes: text("notes").notNull().default(""),
+    status: text("status").notNull().default("queued"),
+    statusMessage: text("status_message").notNull().default("Ready to search"),
+    matchedUrl: text("matched_url"),
+    resultTitle: text("result_title"),
+    priceCents: integer("price_cents"),
+    currency: text("currency"),
+    inStock: boolean("in_stock"),
+    matchType: text("match_type"),
+    confidence: text("confidence"),
+    evidenceJson: text("evidence_json"),
+    pageEtag: text("page_etag"),
+    pageLastModified: text("page_last_modified"),
+    lastHttpStatus: integer("last_http_status"),
+    reasonCode: text("reason_code"),
+    failureClass: text("failure_class"),
+    challengeType: text("challenge_type"),
+    confidenceScoresJson: text("confidence_scores_json"),
+    lastDurationMs: integer("last_duration_ms"),
+    lastContentHash: text("last_content_hash"),
+    lastScanId: text("last_scan_id"),
+    lastCheckedAt: text("last_checked_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("monitored_products_owner_idx").on(table.ownerEmail),
+    index("monitored_products_owner_host_checked_idx").on(
+      table.ownerEmail,
+      table.hostname,
+      table.lastCheckedAt,
+      table.createdAt,
+    ),
+    index("monitored_products_owner_ean_offer_idx").on(
+      table.ownerEmail,
+      table.ean,
+      table.status,
+      table.currency,
+      table.inStock,
+      table.priceCents,
+    ),
+    uniqueIndex("monitored_products_owner_url_ean_uidx").on(table.ownerEmail, table.websiteUrl, table.ean),
+  ],
+);
 
-export const monitoredWebsites = sqliteTable("monitored_websites", {
-  id: text("id").primaryKey(),
-  ownerEmail: text("owner_email").notNull(),
-  url: text("url").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("monitored_websites_owner_idx").on(table.ownerEmail),
-  uniqueIndex("monitored_websites_owner_url_uidx").on(table.ownerEmail, table.url),
-]);
+export const monitoredWebsites = pgTable(
+  "monitored_websites",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    url: text("url").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("monitored_websites_owner_idx").on(table.ownerEmail),
+    uniqueIndex("monitored_websites_owner_url_uidx").on(table.ownerEmail, table.url),
+  ],
+);
 
-export const customSearchProfiles = sqliteTable("custom_search_profiles", {
-  id: text("id").primaryKey(),
-  label: text("label").notNull(),
-  hostname: text("hostname").notNull().default(""),
-  htmlSignature: text("html_signature").notNull().default(""),
-  searchUrlTemplate: text("search_url_template").notNull(),
-  productSelector: text("product_selector").notNull().default(""),
-  eanSelector: text("ean_selector").notNull().default(""),
-  priceSelector: text("price_selector").notNull().default(""),
-  jsonLdEanFields: text("json_ld_ean_fields").notNull().default(""),
-  jsonLdPriceFields: text("json_ld_price_fields").notNull().default(""),
-  jsonLdCurrencyFields: text("json_ld_currency_fields").notNull().default(""),
-  blockPatterns: text("block_patterns").notNull().default(""),
-  allowRenderedFallback: integer("allow_rendered_fallback", { mode: "boolean" }).notNull().default(false),
-  revision: integer("revision").notNull().default(1),
-  siteType: text("site_type").notNull().default("auto"),
-  timeoutMs: integer("timeout_ms"),
-  maxPageBytes: integer("max_page_bytes"),
-  retryBudget: integer("retry_budget"),
-  healthScore: integer("health_score").notNull().default(50),
-  lastSeenWorkingAt: text("last_seen_working_at"),
-  lastSignatureSeenAt: text("last_signature_seen_at"),
-  driftStatus: text("drift_status").notNull().default("unknown"),
-  selectorSuggestionsJson: text("selector_suggestions_json"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  createdBy: text("created_by").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("custom_search_profiles_host_enabled_idx").on(table.hostname, table.enabled),
-]);
+export const customSearchProfiles = pgTable(
+  "custom_search_profiles",
+  {
+    id: text("id").primaryKey(),
+    label: text("label").notNull(),
+    hostname: text("hostname").notNull().default(""),
+    htmlSignature: text("html_signature").notNull().default(""),
+    searchUrlTemplate: text("search_url_template").notNull(),
+    productSelector: text("product_selector").notNull().default(""),
+    eanSelector: text("ean_selector").notNull().default(""),
+    priceSelector: text("price_selector").notNull().default(""),
+    jsonLdEanFields: text("json_ld_ean_fields").notNull().default(""),
+    jsonLdPriceFields: text("json_ld_price_fields").notNull().default(""),
+    jsonLdCurrencyFields: text("json_ld_currency_fields").notNull().default(""),
+    blockPatterns: text("block_patterns").notNull().default(""),
+    allowRenderedFallback: boolean("allow_rendered_fallback").notNull().default(false),
+    revision: integer("revision").notNull().default(1),
+    siteType: text("site_type").notNull().default("auto"),
+    timeoutMs: integer("timeout_ms"),
+    maxPageBytes: integer("max_page_bytes"),
+    retryBudget: integer("retry_budget"),
+    healthScore: integer("health_score").notNull().default(50),
+    lastSeenWorkingAt: text("last_seen_working_at"),
+    lastSignatureSeenAt: text("last_signature_seen_at"),
+    driftStatus: text("drift_status").notNull().default("unknown"),
+    selectorSuggestionsJson: text("selector_suggestions_json"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("custom_search_profiles_host_enabled_idx").on(table.hostname, table.enabled)],
+);
 
-export const scraperSitemapHints = sqliteTable("scraper_sitemap_hints", {
-  cacheKey: text("cache_key").primaryKey(),
-  hostname: text("hostname").notNull(),
-  ean: text("ean").notNull(),
-  candidateUrl: text("candidate_url").notNull(),
-  sitemapUrl: text("sitemap_url"),
-  sitemapLastmod: text("sitemap_lastmod"),
-  discoveredAt: text("discovered_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  lastVerifiedAt: text("last_verified_at"),
-  expiresAt: text("expires_at").notNull(),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("scraper_sitemap_hints_host_ean_idx").on(table.hostname, table.ean),
-]);
+export const scraperSitemapHints = pgTable(
+  "scraper_sitemap_hints",
+  {
+    cacheKey: text("cache_key").primaryKey(),
+    hostname: text("hostname").notNull(),
+    ean: text("ean").notNull(),
+    candidateUrl: text("candidate_url").notNull(),
+    sitemapUrl: text("sitemap_url"),
+    sitemapLastmod: text("sitemap_lastmod"),
+    discoveredAt: text("discovered_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    lastVerifiedAt: text("last_verified_at"),
+    expiresAt: text("expires_at").notNull(),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("scraper_sitemap_hints_host_ean_idx").on(table.hostname, table.ean)],
+);
 
-export const scraperDomainState = sqliteTable("scraper_domain_state", {
-  hostname: text("hostname").primaryKey(),
-  nextAllowedAt: text("next_allowed_at"),
-  backoffUntil: text("backoff_until"),
-  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
-  totalChecks: integer("total_checks").notNull().default(0),
-  blockedChecks: integer("blocked_checks").notNull().default(0),
-  unavailableChecks: integer("unavailable_checks").notNull().default(0),
-  needsReviewChecks: integer("needs_review_checks").notNull().default(0),
-  lastOutcome: text("last_outcome"),
-  lastFailureKind: text("last_failure_kind"),
-  lastProfileId: text("last_profile_id"),
-  lastCheckedAt: text("last_checked_at"),
-  lastSuccessAt: text("last_success_at"),
-  backoffExponent: integer("backoff_exponent").notNull().default(0),
-  retryBudgetRemaining: integer("retry_budget_remaining").notNull().default(3),
-  cooldownReason: text("cooldown_reason"),
-  failureClass: text("failure_class"),
-  lastReasonCode: text("last_reason_code"),
-  lastChallengeType: text("last_challenge_type"),
-  successfulChecks: integer("successful_checks").notNull().default(0),
-  notFoundChecks: integer("not_found_checks").notNull().default(0),
-  temporaryFailureChecks: integer("temporary_failure_checks").notNull().default(0),
-  permanentFailureChecks: integer("permanent_failure_checks").notNull().default(0),
-  challengeChecks: integer("challenge_checks").notNull().default(0),
-  totalResponseMs: integer("total_response_ms").notNull().default(0),
-  responseSamples: integer("response_samples").notNull().default(0),
-  lastResponseMs: integer("last_response_ms"),
-  healthScore: integer("health_score").notNull().default(100),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("scraper_domain_state_updated_idx").on(table.updatedAt),
-]);
+export const scraperDomainState = pgTable(
+  "scraper_domain_state",
+  {
+    hostname: text("hostname").primaryKey(),
+    nextAllowedAt: text("next_allowed_at"),
+    backoffUntil: text("backoff_until"),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    totalChecks: integer("total_checks").notNull().default(0),
+    blockedChecks: integer("blocked_checks").notNull().default(0),
+    unavailableChecks: integer("unavailable_checks").notNull().default(0),
+    needsReviewChecks: integer("needs_review_checks").notNull().default(0),
+    lastOutcome: text("last_outcome"),
+    lastFailureKind: text("last_failure_kind"),
+    lastProfileId: text("last_profile_id"),
+    lastCheckedAt: text("last_checked_at"),
+    lastSuccessAt: text("last_success_at"),
+    backoffExponent: integer("backoff_exponent").notNull().default(0),
+    retryBudgetRemaining: integer("retry_budget_remaining").notNull().default(3),
+    cooldownReason: text("cooldown_reason"),
+    failureClass: text("failure_class"),
+    lastReasonCode: text("last_reason_code"),
+    lastChallengeType: text("last_challenge_type"),
+    successfulChecks: integer("successful_checks").notNull().default(0),
+    notFoundChecks: integer("not_found_checks").notNull().default(0),
+    temporaryFailureChecks: integer("temporary_failure_checks").notNull().default(0),
+    permanentFailureChecks: integer("permanent_failure_checks").notNull().default(0),
+    challengeChecks: integer("challenge_checks").notNull().default(0),
+    totalResponseMs: integer("total_response_ms").notNull().default(0),
+    responseSamples: integer("response_samples").notNull().default(0),
+    lastResponseMs: integer("last_response_ms"),
+    healthScore: integer("health_score").notNull().default(100),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("scraper_domain_state_updated_idx").on(table.updatedAt)],
+);
 
-export const scraperDomainCooldowns = sqliteTable("scraper_domain_cooldowns", {
-  hostname: text("hostname").notNull(),
-  reasonCode: text("reason_code").notNull(),
-  failureClass: text("failure_class").notNull(),
-  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
-  retryBudgetRemaining: integer("retry_budget_remaining").notNull().default(3),
-  cooldownUntil: text("cooldown_until").notNull(),
-  lastSeenAt: text("last_seen_at").notNull(),
-}, (table) => [
-  primaryKey({ columns: [table.hostname, table.reasonCode] }),
-  index("scraper_domain_cooldowns_active_idx").on(table.hostname, table.cooldownUntil),
-]);
+export const scraperDomainCooldowns = pgTable(
+  "scraper_domain_cooldowns",
+  {
+    hostname: text("hostname").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    failureClass: text("failure_class").notNull(),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    retryBudgetRemaining: integer("retry_budget_remaining").notNull().default(3),
+    cooldownUntil: text("cooldown_until").notNull(),
+    lastSeenAt: text("last_seen_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.hostname, table.reasonCode] }),
+    index("scraper_domain_cooldowns_active_idx").on(table.hostname, table.cooldownUntil),
+  ],
+);
 
-export const priceSnapshots = sqliteTable("price_snapshots", {
-  id: text("id").primaryKey(),
-  ownerEmail: text("owner_email").notNull(),
-  productId: text("product_id").notNull(),
-  scanId: text("scan_id").notNull(),
-  ean: text("ean").notNull(),
-  hostname: text("hostname").notNull(),
-  matchedUrl: text("matched_url").notNull(),
-  priceCents: integer("price_cents").notNull(),
-  currency: text("currency").notNull(),
-  inStock: integer("in_stock", { mode: "boolean" }),
-  exactEan: integer("exact_ean", { mode: "boolean" }).notNull().default(false),
-  nameSimilarityBps: integer("name_similarity_bps").notNull().default(0),
-  priceConfidence: integer("price_confidence").notNull().default(0),
-  sourceConfidence: integer("source_confidence").notNull().default(0),
-  overallConfidence: integer("overall_confidence").notNull().default(0),
-  priceSource: text("price_source"),
-  contentHash: text("content_hash"),
-  capturedAt: text("captured_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  uniqueIndex("price_snapshots_scan_uidx").on(table.scanId),
-  index("price_snapshots_owner_product_time_idx").on(table.ownerEmail, table.productId, table.capturedAt),
-  index("price_snapshots_owner_ean_offer_idx").on(table.ownerEmail, table.ean, table.currency, table.inStock, table.priceCents, table.capturedAt),
-]);
+export const priceSnapshots = pgTable(
+  "price_snapshots",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    productId: text("product_id").notNull(),
+    scanId: text("scan_id").notNull(),
+    ean: text("ean").notNull(),
+    hostname: text("hostname").notNull(),
+    matchedUrl: text("matched_url").notNull(),
+    priceCents: integer("price_cents").notNull(),
+    currency: text("currency").notNull(),
+    inStock: boolean("in_stock"),
+    exactEan: boolean("exact_ean").notNull().default(false),
+    nameSimilarityBps: integer("name_similarity_bps").notNull().default(0),
+    priceConfidence: integer("price_confidence").notNull().default(0),
+    sourceConfidence: integer("source_confidence").notNull().default(0),
+    overallConfidence: integer("overall_confidence").notNull().default(0),
+    priceSource: text("price_source"),
+    contentHash: text("content_hash"),
+    capturedAt: text("captured_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("price_snapshots_scan_uidx").on(table.scanId),
+    index("price_snapshots_owner_product_time_idx").on(table.ownerEmail, table.productId, table.capturedAt),
+    index("price_snapshots_owner_ean_offer_idx").on(
+      table.ownerEmail,
+      table.ean,
+      table.currency,
+      table.inStock,
+      table.priceCents,
+      table.capturedAt,
+    ),
+  ],
+);
 
-export const scrapeRuns = sqliteTable("scrape_runs", {
-  id: text("id").primaryKey(),
-  ownerEmail: text("owner_email").notNull(),
-  productId: text("product_id"),
-  scheduleId: text("schedule_id"),
-  trigger: text("trigger").notNull().default("manual"),
-  hostname: text("hostname").notNull(),
-  profileId: text("profile_id"),
-  status: text("status").notNull().default("running"),
-  reasonCode: text("reason_code"),
-  failureClass: text("failure_class"),
-  challengeType: text("challenge_type"),
-  message: text("message"),
-  durationMs: integer("duration_ms"),
-  attemptCount: integer("attempt_count").notNull().default(0),
-  matchedUrl: text("matched_url"),
-  resultTitle: text("result_title"),
-  priceCents: integer("price_cents"),
-  currency: text("currency"),
-  inStock: integer("in_stock", { mode: "boolean" }),
-  exactEan: integer("exact_ean", { mode: "boolean" }).notNull().default(false),
-  nameSimilarityBps: integer("name_similarity_bps"),
-  confidenceScoresJson: text("confidence_scores_json"),
-  httpStatus: integer("http_status"),
-  startedAt: text("started_at").notNull(),
-  completedAt: text("completed_at"),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("scrape_runs_owner_product_time_idx").on(table.ownerEmail, table.productId, table.startedAt),
-  index("scrape_runs_hostname_time_idx").on(table.hostname, table.startedAt),
-  index("scrape_runs_status_reason_time_idx").on(table.status, table.reasonCode, table.startedAt),
-  index("scrape_runs_profile_time_idx").on(table.profileId, table.startedAt),
-]);
+export const scrapeRuns = pgTable(
+  "scrape_runs",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    productId: text("product_id"),
+    scheduleId: text("schedule_id"),
+    trigger: text("trigger").notNull().default("manual"),
+    hostname: text("hostname").notNull(),
+    profileId: text("profile_id"),
+    status: text("status").notNull().default("running"),
+    reasonCode: text("reason_code"),
+    failureClass: text("failure_class"),
+    challengeType: text("challenge_type"),
+    message: text("message"),
+    durationMs: integer("duration_ms"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    matchedUrl: text("matched_url"),
+    resultTitle: text("result_title"),
+    priceCents: integer("price_cents"),
+    currency: text("currency"),
+    inStock: boolean("in_stock"),
+    exactEan: boolean("exact_ean").notNull().default(false),
+    nameSimilarityBps: integer("name_similarity_bps"),
+    confidenceScoresJson: text("confidence_scores_json"),
+    httpStatus: integer("http_status"),
+    startedAt: text("started_at").notNull(),
+    completedAt: text("completed_at"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("scrape_runs_owner_product_time_idx").on(table.ownerEmail, table.productId, table.startedAt),
+    index("scrape_runs_hostname_time_idx").on(table.hostname, table.startedAt),
+    index("scrape_runs_status_reason_time_idx").on(table.status, table.reasonCode, table.startedAt),
+    index("scrape_runs_profile_time_idx").on(table.profileId, table.startedAt),
+  ],
+);
 
-export const scrapeAttempts = sqliteTable("scrape_attempts", {
-  id: text("id").primaryKey(),
-  runId: text("run_id").notNull(),
-  ownerEmail: text("owner_email").notNull(),
-  ordinal: integer("ordinal").notNull(),
-  url: text("url").notNull(),
-  hostname: text("hostname").notNull(),
-  profileId: text("profile_id"),
-  profileLabel: text("profile_label"),
-  outcome: text("outcome").notNull(),
-  reasonCode: text("reason_code").notNull(),
-  failureClass: text("failure_class").notNull(),
-  challengeType: text("challenge_type"),
-  httpStatus: integer("http_status"),
-  durationMs: integer("duration_ms").notNull(),
-  responseBytes: integer("response_bytes"),
-  contentHash: text("content_hash"),
-  message: text("message"),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  uniqueIndex("scrape_attempts_run_ordinal_uidx").on(table.runId, table.ordinal),
-  index("scrape_attempts_owner_time_idx").on(table.ownerEmail, table.createdAt),
-  index("scrape_attempts_host_time_idx").on(table.hostname, table.createdAt),
-  index("scrape_attempts_reason_time_idx").on(table.reasonCode, table.createdAt),
-]);
+export const scrapeAttempts = pgTable(
+  "scrape_attempts",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    ownerEmail: text("owner_email").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    url: text("url").notNull(),
+    hostname: text("hostname").notNull(),
+    profileId: text("profile_id"),
+    profileLabel: text("profile_label"),
+    outcome: text("outcome").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    failureClass: text("failure_class").notNull(),
+    challengeType: text("challenge_type"),
+    httpStatus: integer("http_status"),
+    durationMs: integer("duration_ms").notNull(),
+    responseBytes: integer("response_bytes"),
+    contentHash: text("content_hash"),
+    message: text("message"),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    uniqueIndex("scrape_attempts_run_ordinal_uidx").on(table.runId, table.ordinal),
+    index("scrape_attempts_owner_time_idx").on(table.ownerEmail, table.createdAt),
+    index("scrape_attempts_host_time_idx").on(table.hostname, table.createdAt),
+    index("scrape_attempts_reason_time_idx").on(table.reasonCode, table.createdAt),
+  ],
+);
 
-export const scraperResultCache = sqliteTable("scraper_result_cache", {
-  cacheKey: text("cache_key").primaryKey(),
-  normalizedUrl: text("normalized_url").notNull(),
-  hostname: text("hostname").notNull(),
-  ean: text("ean").notNull(),
-  contentHash: text("content_hash").notNull(),
-  resultJson: text("result_json").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  expiresAt: text("expires_at").notNull(),
-  lastUsedAt: text("last_used_at"),
-  hitCount: integer("hit_count").notNull().default(0),
-}, (table) => [
-  uniqueIndex("scraper_result_cache_identity_uidx").on(table.normalizedUrl, table.ean, table.contentHash),
-  index("scraper_result_cache_host_ean_expiry_idx").on(table.hostname, table.ean, table.expiresAt),
-]);
+export const scraperResultCache = pgTable(
+  "scraper_result_cache",
+  {
+    cacheKey: text("cache_key").primaryKey(),
+    normalizedUrl: text("normalized_url").notNull(),
+    hostname: text("hostname").notNull(),
+    ean: text("ean").notNull(),
+    contentHash: text("content_hash").notNull(),
+    resultJson: text("result_json").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    expiresAt: text("expires_at").notNull(),
+    lastUsedAt: text("last_used_at"),
+    hitCount: integer("hit_count").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("scraper_result_cache_identity_uidx").on(table.normalizedUrl, table.ean, table.contentHash),
+    index("scraper_result_cache_host_ean_expiry_idx").on(table.hostname, table.ean, table.expiresAt),
+  ],
+);
 
-export const scraperKnownBadPatterns = sqliteTable("scraper_known_bad_patterns", {
-  id: text("id").primaryKey(),
-  hostname: text("hostname").notNull(),
-  urlPattern: text("url_pattern"),
-  contentPattern: text("content_pattern"),
-  reason: text("reason").notNull(),
-  failureClass: text("failure_class").notNull().default("permanent"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  expiresAt: text("expires_at"),
-  hitCount: integer("hit_count").notNull().default(0),
-  lastHitAt: text("last_hit_at"),
-  createdBy: text("created_by").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("scraper_known_bad_host_enabled_idx").on(table.hostname, table.enabled),
-]);
+export const scraperKnownBadPatterns = pgTable(
+  "scraper_known_bad_patterns",
+  {
+    id: text("id").primaryKey(),
+    hostname: text("hostname").notNull(),
+    urlPattern: text("url_pattern"),
+    contentPattern: text("content_pattern"),
+    reason: text("reason").notNull(),
+    failureClass: text("failure_class").notNull().default("permanent"),
+    enabled: boolean("enabled").notNull().default(true),
+    expiresAt: text("expires_at"),
+    hitCount: integer("hit_count").notNull().default(0),
+    lastHitAt: text("last_hit_at"),
+    createdBy: text("created_by").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("scraper_known_bad_host_enabled_idx").on(table.hostname, table.enabled)],
+);
 
-export const scraperDomainPolicies = sqliteTable("scraper_domain_policies", {
+export const scraperDomainPolicies = pgTable("scraper_domain_policies", {
   hostname: text("hostname").primaryKey(),
   accessMode: text("access_mode").notNull().default("allow"),
   robotsMode: text("robots_mode").notNull().default("respect"),
@@ -273,38 +358,48 @@ export const scraperDomainPolicies = sqliteTable("scraper_domain_policies", {
   blockReason: text("block_reason"),
   notes: text("notes"),
   updatedBy: text("updated_by").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const scraperSchedules = sqliteTable("scraper_schedules", {
-  id: text("id").primaryKey(),
-  ownerEmail: text("owner_email").notNull(),
-  name: text("name").notNull(),
-  targetMode: text("target_mode").notNull().default("all"),
-  productIdsJson: text("product_ids_json").notNull().default("[]"),
-  cadenceMinutes: integer("cadence_minutes").notNull(),
-  timeZone: text("time_zone").notNull().default("UTC"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
-  nextRunAt: text("next_run_at").notNull(),
-  lastRunAt: text("last_run_at"),
-  lastOutcome: text("last_outcome"),
-  cursorIndex: integer("cursor_index").notNull().default(0),
-  pendingOutcomeJson: text("pending_outcome_json").notNull().default("{}"),
-  pendingStartedAt: text("pending_started_at"),
-  leaseToken: text("lease_token"),
-  leaseUntil: text("lease_until"),
-  revision: integer("revision").notNull().default(1),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [
-  index("scraper_schedules_owner_due_idx").on(table.ownerEmail, table.enabled, table.nextRunAt),
-]);
+export const scraperSchedules = pgTable(
+  "scraper_schedules",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    name: text("name").notNull(),
+    targetMode: text("target_mode").notNull().default("all"),
+    productIdsJson: text("product_ids_json").notNull().default("[]"),
+    cadenceMinutes: integer("cadence_minutes").notNull(),
+    timeZone: text("time_zone").notNull().default("UTC"),
+    enabled: boolean("enabled").notNull().default(true),
+    nextRunAt: text("next_run_at").notNull(),
+    lastRunAt: text("last_run_at"),
+    lastOutcome: text("last_outcome"),
+    cursorIndex: integer("cursor_index").notNull().default(0),
+    pendingOutcomeJson: text("pending_outcome_json").notNull().default("{}"),
+    pendingStartedAt: text("pending_started_at"),
+    leaseToken: text("lease_token"),
+    leaseUntil: text("lease_until"),
+    revision: integer("revision").notNull().default(1),
+    createdAt: text("created_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at")
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [index("scraper_schedules_owner_due_idx").on(table.ownerEmail, table.enabled, table.nextRunAt)],
+);
 
-export const scraperAlertRules = sqliteTable("scraper_alert_rules", {
+export const scraperAlertRules = pgTable("scraper_alert_rules", {
   id: text("id").primaryKey(),
   hostname: text("hostname"),
-  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  enabled: boolean("enabled").notNull().default(true),
   minimumChecks: integer("minimum_checks").notNull().default(5),
   minimumSuccessRateBps: integer("minimum_success_rate_bps").notNull().default(8000),
   maximumConsecutiveFailures: integer("maximum_consecutive_failures").notNull().default(3),
@@ -313,24 +408,32 @@ export const scraperAlertRules = sqliteTable("scraper_alert_rules", {
   cooldownMinutes: integer("cooldown_minutes").notNull().default(60),
   lastEvaluatedAt: text("last_evaluated_at"),
   createdBy: text("created_by").notNull(),
-  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
 });
 
-export const scraperAlertEvents = sqliteTable("scraper_alert_events", {
-  id: text("id").primaryKey(),
-  ruleId: text("rule_id").notNull(),
-  hostname: text("hostname").notNull(),
-  state: text("state").notNull().default("open"),
-  dedupeKey: text("dedupe_key").notNull(),
-  observedJson: text("observed_json").notNull(),
-  message: text("message").notNull(),
-  firstDetectedAt: text("first_detected_at").notNull(),
-  lastDetectedAt: text("last_detected_at").notNull(),
-  sentAt: text("sent_at"),
-  resolvedAt: text("resolved_at"),
-  deliveryError: text("delivery_error"),
-}, (table) => [
-  uniqueIndex("scraper_alert_events_dedupe_uidx").on(table.dedupeKey),
-  index("scraper_alert_events_host_state_time_idx").on(table.hostname, table.state, table.lastDetectedAt),
-]);
+export const scraperAlertEvents = pgTable(
+  "scraper_alert_events",
+  {
+    id: text("id").primaryKey(),
+    ruleId: text("rule_id").notNull(),
+    hostname: text("hostname").notNull(),
+    state: text("state").notNull().default("open"),
+    dedupeKey: text("dedupe_key").notNull(),
+    observedJson: text("observed_json").notNull(),
+    message: text("message").notNull(),
+    firstDetectedAt: text("first_detected_at").notNull(),
+    lastDetectedAt: text("last_detected_at").notNull(),
+    sentAt: text("sent_at"),
+    resolvedAt: text("resolved_at"),
+    deliveryError: text("delivery_error"),
+  },
+  (table) => [
+    uniqueIndex("scraper_alert_events_dedupe_uidx").on(table.dedupeKey),
+    index("scraper_alert_events_host_state_time_idx").on(table.hostname, table.state, table.lastDetectedAt),
+  ],
+);

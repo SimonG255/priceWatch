@@ -18,12 +18,13 @@ export async function POST(request: Request) {
   try {
     await ensureProductsSchema();
     const input = validateProductInput((await request.json()) as ProductInput);
+    const hostname = new URL(input.websiteUrl).hostname.toLowerCase().replace(/^www\./, "");
     const [product] = await getDb().insert(monitoredProducts).values({
-      id: crypto.randomUUID(), ownerEmail, websiteUrl: input.websiteUrl, productName: input.productName, ean: input.ean,
+      id: crypto.randomUUID(), ownerEmail, websiteUrl: input.websiteUrl, hostname, productName: input.productName, ean: input.ean,
       sku: input.sku ?? "", notes: input.notes ?? "", status: "queued", statusMessage: "Ready to search",
     }).onConflictDoUpdate({
       target: [monitoredProducts.ownerEmail, monitoredProducts.websiteUrl, monitoredProducts.ean],
-      set: { productName: input.productName, sku: input.sku ?? "", notes: input.notes ?? "", status: "queued", statusMessage: "Ready to search", updatedAt: new Date().toISOString() },
+      set: { hostname, productName: input.productName, sku: input.sku ?? "", notes: input.notes ?? "", status: "queued", statusMessage: "Ready to search", updatedAt: new Date().toISOString() },
     }).returning();
     return Response.json({ product }, { status: 201 });
   } catch (error) {
