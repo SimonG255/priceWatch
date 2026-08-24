@@ -124,7 +124,7 @@ test("AI web-search sources can recover a product page when the retry list is em
   assert.equal(result.matchedUrl, recoveredUrl);
 });
 
-test("an EAN match without a current price is not accepted after AI review", async (t) => {
+test("an EAN match without a current price is routed to review after AI review", async (t) => {
   installFetchMock(t, (url) => {
     if (url === openAiUrl) return aiReviewResponse({ verdict: "not_found", confirmedUrl: "", retryUrls: [], issues: ["missing_price"] });
     return url === storeUrl ? htmlResponse(productPage({ price: undefined, url: "/products/mx-master-4" })) : htmlResponse("Not found", 404);
@@ -132,7 +132,7 @@ test("an EAN match without a current price is not accepted after AI review", asy
 
   const result = await searchPublicWebsite(storeUrl, productName, ean);
 
-  assert.equal(result.status, "not_found");
+  assert.equal(result.status, "needs_review");
   assert.equal(result.priceCents, undefined);
 });
 
@@ -162,7 +162,7 @@ test("an incomplete AI review preserves a strong locally verified result", async
   assert.doesNotMatch(result.message, /AI review/);
 });
 
-test("a blank AI confirmation does not approve the local candidate", async (t) => {
+test("a blank AI confirmation routes the unapproved local candidate to review", async (t) => {
   installFetchMock(t, (url) => {
     if (url === openAiUrl) return aiReviewResponse({ verdict: "confirmed", confirmedUrl: null, retryUrls: [], issues: [] });
     return url === storeUrl ? htmlResponse(productPage({ price: "109.90", url: "/mx-master-4" })) : htmlResponse("Not found", 404);
@@ -170,10 +170,10 @@ test("a blank AI confirmation does not approve the local candidate", async (t) =
 
   const result = await searchPublicWebsite(storeUrl, productName, ean);
 
-  assert.equal(result.status, "not_found");
+  assert.equal(result.status, "needs_review");
 });
 
-test("a mismatched AI confirmation is fetched instead of approving the local candidate", async (t) => {
+test("a mismatched AI confirmation leaves the local candidate needing review", async (t) => {
   installFetchMock(t, (url) => {
     if (url === openAiUrl) return aiReviewResponse({ verdict: "confirmed", confirmedUrl: "https://shop.example/products/different", retryUrls: [], issues: [] });
     return url === storeUrl ? htmlResponse(productPage({ price: "109.90", url: "/mx-master-4" })) : htmlResponse("Not found", 404);
@@ -181,7 +181,7 @@ test("a mismatched AI confirmation is fetched instead of approving the local can
 
   const result = await searchPublicWebsite(storeUrl, productName, ean);
 
-  assert.equal(result.status, "not_found");
+  assert.equal(result.status, "needs_review");
 });
 
 test("AI reviews the locally acceptable candidate rather than a higher-scoring no-price page", async (t) => {
@@ -280,7 +280,7 @@ test("reports a configured-search timeout instead of marking a product not found
 
   const result = await searchPublicWebsite(storeUrl, productName, ean, profiles);
 
-  assert.equal(result.status, "error");
+  assert.equal(result.status, "unavailable");
   assert.match(result.message, /configured website search did not respond within 15 seconds/i);
 });
 
@@ -288,8 +288,9 @@ test("reports a configured website challenge as blocked", async (t) => {
   const profiles = [{
     id: "configured", label: "Configured search", hostname: "shop.example", htmlSignature: "", searchUrlTemplate: "/configured-search?term={query}",
   }];
+  let aiCalled = false;
   installFetchMock(t, (url) => {
-    if (url === openAiUrl) return aiReviewResponse({ verdict: "not_found", confirmedUrl: null, retryUrls: [], issues: ["not_found"] });
+    if (url === openAiUrl) { aiCalled = true; return aiReviewResponse({ verdict: "not_found", confirmedUrl: null, retryUrls: [], issues: ["not_found"] }); }
     if (url === storeUrl) return htmlResponse("<html><title>Store</title><body>Welcome</body></html>");
     if (url.startsWith("https://shop.example/configured-search")) return htmlResponse("<html><title>Just a moment...</title><body>/cdn-cgi/challenge-platform</body></html>");
     return htmlResponse("Not found", 404);
@@ -299,6 +300,7 @@ test("reports a configured website challenge as blocked", async (t) => {
 
   assert.equal(result.status, "blocked");
   assert.match(result.message, /does not bypass CAPTCHAs/i);
+  assert.equal(aiCalled, false);
 });
 
 test("uses a sitemap URL only after its page verifies the EAN and current price", async (t) => {
@@ -391,7 +393,171 @@ test("reports a sitemap candidate page returning 503 as unavailable", async (t) 
 
   const result = await searchPublicWebsite(jagerRoot, jagerProduct, jagerEan);
 
-  assert.equal(result.status, "error");
+  assert.equal(result.status, "unavailable");
   assert.equal(result.matchedUrl, canonicalUrl);
   assert.match(result.message, /temporarily unavailable/i);
+});
+
+test("reuses a previously verified product only after a conditional 304 response", async (t) => {
+  const canonicalUrl = "https://shop.example/products/mx-master-4";
+  let conditionalHeaders: Headers | undefined;
+  installFetchMock(t, (url, init) => {
+    if (url === storeUrl) return htmlResponse("<html><title>Store</title><body>Welcome</body></html>");
+    if (url === canonicalUrl) {
+      conditionalHeaders = new Headers(init?.headers);
+      return new Response(null, {
+        status: 304,
+        headers: { etag: '"mx-master-v1"', "last-modified": "Wed, 01 Jan 2025 00:00:00 GMT" },
+      });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], canonicalUrl, {
+    previous: {
+      status: "found",
+      matchedUrl: canonicalUrl,
+      title: productName,
+      priceCents: 10990,
+      currency: "EUR",
+      inStock: true,
+      matchType: "ean",
+      confidence: "high",
+      evidence: {
+        exactEan: true,
+        structuredExactEan: true,
+        structuredProduct: true,
+        nameScore: 1,
+        priceSource: "structured",
+        canonicalUrl,
+        checkedAt: "2025-01-01T00:00:00.000Z",
+      },
+      pageEtag: '"mx-master-v1"',
+      pageLastModified: "Wed, 01 Jan 2025 00:00:00 GMT",
+    },
+  });
+
+  assert.equal(conditionalHeaders?.get("if-none-match"), '"mx-master-v1"');
+  assert.equal(conditionalHeaders?.get("if-modified-since"), "Wed, 01 Jan 2025 00:00:00 GMT");
+  assert.equal(result.status, "found");
+  assert.equal(result.httpStatus, 304);
+  assert.equal(result.priceCents, 10990);
+  assert.equal(result.evidence?.exactEan, true);
+  assert.equal(result.evidence?.canonicalUrl, canonicalUrl);
+});
+
+test("uses a cached sitemap URL only as a discovery hint and still verifies its page", async (t) => {
+  const canonicalUrl = "https://shop.example/products/mx-master-4";
+  const cacheLookups: Array<{ hostname: string; ean: string }> = [];
+  const cacheWrites: unknown[] = [];
+  const siteCalls: string[] = [];
+  const profiles = [{
+    id: "catalog",
+    label: "Catalog search",
+    hostname: "shop.example",
+    htmlSignature: "",
+    searchUrlTemplate: "/catalog?term={query}",
+  }];
+  installFetchMock(t, (url) => {
+    if (url === openAiUrl) return aiReviewResponse({ verdict: "confirmed", confirmedUrl: canonicalUrl, retryUrls: [], issues: [] });
+    siteCalls.push(url);
+    if (url === storeUrl) return htmlResponse("<html><title>Store</title><body>Welcome</body></html>");
+    if (url.startsWith("https://shop.example/catalog")) return htmlResponse("Not found", 404);
+    if (url === canonicalUrl) return htmlResponse(productPage({ price: "109.90", url: canonicalUrl }));
+    if (url.includes("robots.txt") || url.includes("sitemap")) throw new Error("A cached sitemap hint must not fetch sitemap documents.");
+    throw new Error(`Unexpected request: ${url}`);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, profiles, undefined, {
+    sitemapCache: {
+      async get(query) {
+        cacheLookups.push(query);
+        return {
+          candidateUrl: canonicalUrl,
+          sitemapUrl: "https://shop.example/sitemap-products.xml",
+          sitemapLastmod: "2025-01-01",
+        };
+      },
+      async put(input) {
+        cacheWrites.push(input);
+      },
+    },
+  });
+
+  assert.deepEqual(cacheLookups, [{ hostname: "shop.example", ean }]);
+  assert.equal(cacheWrites.length, 0);
+  assert.equal(siteCalls.includes(canonicalUrl), true);
+  assert.equal(siteCalls.some((url) => url.includes("robots.txt") || url.includes("sitemap")), false);
+  assert.equal(result.status, "found");
+  assert.equal(result.priceCents, 10990);
+  assert.equal(result.evidence?.exactEan, true);
+  assert.equal(result.evidence?.priceSource, "structured");
+  assert.equal(result.evidence?.canonicalUrl, canonicalUrl);
+});
+
+test("uses an opted-in permitted renderer when normal HTML lacks product data", async (t) => {
+  const canonicalUrl = "https://shop.example/products/mx-master-4";
+  const rendererCalls: Array<{ url: string; hostname: string; waitForSelector?: string }> = [];
+  const profiles = [{
+    id: "javascript-store",
+    label: "JavaScript store",
+    hostname: "shop.example",
+    htmlSignature: "",
+    searchUrlTemplate: "/catalog?term={query}",
+    productSelector: ".product-shell",
+    allowRenderedFallback: true,
+  }];
+  installFetchMock(t, (url) => {
+    if (url === openAiUrl) return aiReviewResponse({ verdict: "confirmed", confirmedUrl: canonicalUrl, retryUrls: [], issues: [] });
+    if (url === storeUrl) {
+      return htmlResponse(`<html><title>${productName}</title><body><article class="product-shell"><h1>${productName}</h1><p>EAN ${ean}</p><div>Loading price…</div></article></body></html>`);
+    }
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, profiles, undefined, {
+    renderer: async (input) => {
+      rendererCalls.push(input);
+      return { url: canonicalUrl, html: productPage({ price: "109.90", url: canonicalUrl }) };
+    },
+  });
+
+  assert.deepEqual(rendererCalls, [{ url: storeUrl, hostname: "shop.example", waitForSelector: ".product-shell" }]);
+  assert.equal(result.status, "found");
+  assert.equal(result.matchedUrl, canonicalUrl);
+  assert.equal(result.priceCents, 10990);
+  assert.equal(result.evidence?.structuredExactEan, true);
+});
+
+test("never invokes a permitted renderer after a detected challenge", async (t) => {
+  let rendererCalls = 0;
+  const profiles = [{
+    id: "protected-store",
+    label: "Protected store",
+    hostname: "shop.example",
+    htmlSignature: "",
+    searchUrlTemplate: "/catalog?term={query}",
+    productSelector: ".product-shell",
+    blockPatterns: "challenge-guard",
+    allowRenderedFallback: true,
+  }];
+  installFetchMock(t, (url) => {
+    if (url === openAiUrl) return aiReviewResponse({ verdict: "not_found", confirmedUrl: null, retryUrls: [], issues: ["challenge"] });
+    if (url === storeUrl) {
+      return htmlResponse(`<html><title>${productName}</title><body><article class="product-shell"><h1>${productName}</h1><p>EAN ${ean}</p><div>Loading price…</div></article></body></html>`);
+    }
+    if (url.startsWith("https://shop.example/catalog")) return htmlResponse("<html><title>Access check</title><body>challenge-guard</body></html>");
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, profiles, undefined, {
+    renderer: async () => {
+      rendererCalls += 1;
+      return { url: "https://shop.example/products/mx-master-4", html: productPage({ price: "109.90", url: "/products/mx-master-4" }) };
+    },
+  });
+
+  assert.equal(rendererCalls, 0);
+  assert.equal(result.status, "blocked");
+  assert.match(result.message, /access challenge/i);
 });

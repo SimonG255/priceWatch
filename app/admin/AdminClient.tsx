@@ -2,8 +2,57 @@
 
 import { useEffect, useState } from "react";
 
-type Profile = { id: string; label: string; hostname: string; htmlSignature: string; searchUrlTemplate: string; enabled: boolean; createdAt: string };
+type Profile = {
+  id: string;
+  label: string;
+  hostname: string;
+  htmlSignature: string;
+  searchUrlTemplate: string;
+  productSelector: string;
+  eanSelector: string;
+  priceSelector: string;
+  jsonLdEanFields: string;
+  jsonLdPriceFields: string;
+  jsonLdCurrencyFields: string;
+  blockPatterns: string;
+  allowRenderedFallback: boolean;
+  enabled: boolean;
+  createdAt: string;
+};
+
 type UsedWebsite = { hostname: string };
+
+type ScraperHealth = {
+  hostname: string;
+  consecutiveFailures: number;
+  totalChecks: number;
+  blockedChecks: number;
+  unavailableChecks: number;
+  needsReviewChecks: number;
+  lastOutcome: string | null;
+  lastProfileId: string | null;
+  lastCheckedAt: string | null;
+  lastSuccessAt: string | null;
+  backoffUntil: string | null;
+};
+
+type ProfileForm = Omit<Profile, "id" | "createdAt">;
+
+const emptyProfile: ProfileForm = {
+  label: "",
+  hostname: "",
+  htmlSignature: "",
+  searchUrlTemplate: "",
+  productSelector: "",
+  eanSelector: "",
+  priceSelector: "",
+  jsonLdEanFields: "",
+  jsonLdPriceFields: "",
+  jsonLdCurrencyFields: "",
+  blockPatterns: "",
+  allowRenderedFallback: false,
+  enabled: true,
+};
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json" } });
@@ -12,9 +61,13 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   return body;
 }
 
+function normalizedHostname(value: string) {
+  return value.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+}
+
 function profileMatchesWebsite(profile: Profile, websiteHostname: string) {
-  const configuredHostname = profile.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
-  const usedHostname = websiteHostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+  const configuredHostname = normalizedHostname(profile.hostname);
+  const usedHostname = normalizedHostname(websiteHostname);
   return Boolean(configuredHostname) && (
     configuredHostname === usedHostname
     || configuredHostname.endsWith(`.${usedHostname}`)
@@ -22,80 +75,147 @@ function profileMatchesWebsite(profile: Profile, websiteHostname: string) {
   );
 }
 
+function outcomeLabel(value: string | null) {
+  if (!value) return "No checks yet";
+  if (value === "not_found") return "Not found";
+  if (value === "needs_review") return "Needs review";
+  if (value === "unavailable") return "Temporarily unavailable";
+  return value;
+}
+
+function checkedLabel(value: string | null) {
+  return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "Never";
+}
+
 export default function AdminClient({ email, aiConfigured }: { email: string; aiConfigured: boolean }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [websites, setWebsites] = useState<UsedWebsite[]>([]);
-  const [label, setLabel] = useState("");
-  const [hostname, setHostname] = useState("");
-  const [htmlSignature, setHtmlSignature] = useState("");
-  const [searchUrlTemplate, setSearchUrlTemplate] = useState("");
-  const [enabled, setEnabled] = useState(true);
+  const [health, setHealth] = useState<ScraperHealth[]>([]);
+  const [form, setForm] = useState<ProfileForm>(emptyProfile);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    request<{ profiles: Profile[]; websites: UsedWebsite[] }>("/api/admin/search-profiles")
-      .then(data => { setProfiles(data.profiles); setWebsites(data.websites); })
+    request<{ profiles: Profile[]; websites: UsedWebsite[]; health: ScraperHealth[] }>("/api/admin/search-profiles")
+      .then(data => {
+        setProfiles(data.profiles);
+        setWebsites(data.websites);
+        setHealth(data.health);
+      })
       .catch(err => setError(err.message));
   }, []);
 
+  function change<K extends keyof ProfileForm>(key: K, value: ProfileForm[K]) {
+    setForm(current => ({ ...current, [key]: value }));
+  }
+
   function resetForm() {
-    setLabel(""); setHostname(""); setHtmlSignature(""); setSearchUrlTemplate(""); setEnabled(true); setEditingId(null);
+    setForm(emptyProfile);
+    setEditingId(null);
   }
 
   function editProfile(profile: Profile) {
-    setEditingId(profile.id); setLabel(profile.label); setHostname(profile.hostname); setHtmlSignature(profile.htmlSignature);
-    setSearchUrlTemplate(profile.searchUrlTemplate); setEnabled(profile.enabled); setError("");
+    setEditingId(profile.id);
+    setForm({
+      label: profile.label,
+      hostname: profile.hostname,
+      htmlSignature: profile.htmlSignature,
+      searchUrlTemplate: profile.searchUrlTemplate,
+      productSelector: profile.productSelector,
+      eanSelector: profile.eanSelector,
+      priceSelector: profile.priceSelector,
+      jsonLdEanFields: profile.jsonLdEanFields,
+      jsonLdPriceFields: profile.jsonLdPriceFields,
+      jsonLdCurrencyFields: profile.jsonLdCurrencyFields,
+      blockPatterns: profile.blockPatterns,
+      allowRenderedFallback: profile.allowRenderedFallback,
+      enabled: profile.enabled,
+    });
+    setError("");
     document.getElementById("profile-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function configureWebsite(websiteHostname: string) {
     resetForm();
-    setLabel(`${websiteHostname} search`); setHostname(websiteHostname); setSearchUrlTemplate("/search?q={query}"); setError("");
+    setForm({ ...emptyProfile, label: `${websiteHostname} search`, hostname: websiteHostname, searchUrlTemplate: "/search?q={query}" });
+    setError("");
     document.getElementById("profile-editor")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function saveProfile(event: React.FormEvent) {
-    event.preventDefault(); setSaving(true); setError("");
+    event.preventDefault();
+    setSaving(true);
+    setError("");
     try {
       const url = editingId ? `/api/admin/search-profiles/${editingId}` : "/api/admin/search-profiles";
-      const { profile } = await request<{ profile: Profile }>(url, { method: editingId ? "PATCH" : "POST", body: JSON.stringify({ label, hostname, htmlSignature, searchUrlTemplate, enabled }) });
+      const { profile } = await request<{ profile: Profile }>(url, {
+        method: editingId ? "PATCH" : "POST",
+        body: JSON.stringify(form),
+      });
       setProfiles(current => editingId ? current.map(item => item.id === profile.id ? profile : item) : [profile, ...current]);
       resetForm();
-    } catch (err) { setError(err instanceof Error ? err.message : "Profile could not be saved."); }
-    finally { setSaving(false); }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Profile could not be saved.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function removeProfile(profile: Profile) {
     if (!window.confirm(`Delete ${profile.label}?`)) return;
-    try { await request(`/api/admin/search-profiles/${profile.id}`, { method: "DELETE" }); setProfiles(current => current.filter(item => item.id !== profile.id)); }
-    catch (err) { setError(err instanceof Error ? err.message : "Profile could not be deleted."); }
+    try {
+      await request(`/api/admin/search-profiles/${profile.id}`, { method: "DELETE" });
+      setProfiles(current => current.filter(item => item.id !== profile.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Profile could not be deleted.");
+    }
   }
 
   return <main className="admin-page">
     <header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
     <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. PriceWatch verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
+
     <section className="admin-card website-inventory">
-      <div className="admin-intro"><h2>Websites in use across customer accounts</h2><p>These are the website hostnames currently submitted by customers. Customer names, product details, and full URLs are not shown here. Edit a matching profile, or configure a new one for a website that needs a different search route or HTML signature.</p></div>
+      <div className="admin-intro"><h2>Websites in use across customer accounts</h2><p>These are the website hostnames currently submitted by customers. Customer names, product details, and full URLs are not shown here. Edit a matching profile, or configure a new one for a website that needs a different search route or extraction rule.</p></div>
       {!websites.length ? <div className="admin-empty">No customer websites have been added yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Website</th><th>Profiles that cover it</th><th>Actions</th></tr></thead><tbody>{websites.map(website => {
         const matchingProfiles = profiles.filter(profile => profileMatchesWebsite(profile, website.hostname));
         return <tr key={website.hostname}><td><code>{website.hostname}</code></td><td>{matchingProfiles.length ? <div className="profile-actions">{matchingProfiles.map(profile => <button key={profile.id} className="edit-profile" onClick={() => editProfile(profile)}>Edit {profile.label}</button>)}</div> : <small>No hostname profile yet</small>}</td><td><div className="profile-actions"><button className="edit-profile" onClick={() => configureWebsite(website.hostname)}>{matchingProfiles.length ? "Add another profile" : "Configure profile"}</button></div></td></tr>;
       })}</tbody></table></div>}
     </section>
+
+    <section className="admin-card scraper-health">
+      <div className="admin-intro"><h2>Extraction health by website</h2><p>Use these public-check outcomes to spot profiles that need attention. A blocked or unavailable result is never treated as product absence, and no raw page content is retained here.</p></div>
+      {!health.length ? <div className="admin-empty">No completed public checks yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Website</th><th>Latest outcome</th><th>Checks</th><th>Failures</th><th>Last checked</th><th>Actions</th></tr></thead><tbody>{health.map(item => {
+        const matchingProfiles = profiles.filter(profile => profileMatchesWebsite(profile, item.hostname));
+        return <tr key={item.hostname}><td><code>{item.hostname}</code></td><td><span className={`health-status ${item.lastOutcome || "unknown"}`}>{outcomeLabel(item.lastOutcome)}</span>{item.backoffUntil && <small>Cooldown until {checkedLabel(item.backoffUntil)}</small>}</td><td>{item.totalChecks}</td><td><small>{item.consecutiveFailures} current · {item.blockedChecks} blocked · {item.unavailableChecks} unavailable · {item.needsReviewChecks} review</small></td><td>{checkedLabel(item.lastCheckedAt)}</td><td><div className="profile-actions">{matchingProfiles.length ? matchingProfiles.map(profile => <button key={profile.id} className="edit-profile" onClick={() => editProfile(profile)}>Edit {profile.label}</button>) : <button className="edit-profile" onClick={() => configureWebsite(item.hostname)}>Configure profile</button>}</div></td></tr>;
+      })}</tbody></table></div>}
+    </section>
+
     <section className={`admin-card ${editingId ? "editing" : ""}`} id="profile-editor">
-      <div className="admin-intro"><span className="editor-mode">{editingId ? "EDITING WEBSITE" : "NEW WEBSITE"}</span><h2>{editingId ? "Edit website search profile" : "Add a website search profile"}</h2><p>Use a hostname for a specific store, an HTML signature for a shared platform, or both. When both are provided, both must match. The HTML signature must occur in the submitted website page source, and the search URL must contain <code>{"{query}"}</code>.</p></div>
+      <div className="admin-intro"><span className="editor-mode">{editingId ? "EDITING WEBSITE" : "NEW WEBSITE"}</span><h2>{editingId ? "Edit website search profile" : "Add a website search profile"}</h2><p>Use a hostname for a specific store, an HTML signature for a shared platform, or both. The search URL must contain <code>{"{query}"}</code>. Extraction hints are optional and only help verify product data already present on the page.</p></div>
       <form onSubmit={saveProfile} className="admin-form">
-        <label><span>Profile name</span><input required maxLength={80} value={label} onChange={event => setLabel(event.target.value)} placeholder="Example Store search"/></label>
-        <label><span>Website hostname <small>optional if HTML is provided</small></span><input value={hostname} onChange={event => setHostname(event.target.value)} placeholder="store.example.com"/></label>
-        <label className="full"><span>HTML signature <small>up to 500 characters from the submitted website page source</small></span><textarea maxLength={500} value={htmlSignature} onChange={event => setHtmlSignature(event.target.value)} placeholder={'data-platform="example-store" or a distinctive script URL'}/></label>
-        <label className="full"><span>Search URL template</span><input required maxLength={500} value={searchUrlTemplate} onChange={event => setSearchUrlTemplate(event.target.value)} placeholder="/search?q={query}"/></label>
-        <label className="enabled-control"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/><span>Enabled for product searches</span></label>
+        <label><span>Profile name</span><input required maxLength={80} value={form.label} onChange={event => change("label", event.target.value)} placeholder="Example Store search"/></label>
+        <label><span>Website hostname <small>optional if HTML is provided</small></span><input value={form.hostname} onChange={event => change("hostname", event.target.value)} placeholder="store.example.com"/></label>
+        <label className="full"><span>HTML signature <small>up to 500 characters from the submitted website page source</small></span><textarea maxLength={500} value={form.htmlSignature} onChange={event => change("htmlSignature", event.target.value)} placeholder={'data-platform="example-store" or a distinctive script URL'}/></label>
+        <label className="full"><span>Search URL template</span><input required maxLength={500} value={form.searchUrlTemplate} onChange={event => change("searchUrlTemplate", event.target.value)} placeholder="/search?q={query}"/></label>
+        <details className="profile-advanced full"><summary>Advanced extraction and safety settings</summary><p>Use only the simple selector and JSON field formats shown. Product data must still have an exact EAN and verified current price before it is saved.</p><div className="advanced-grid">
+          <label><span>Product container selector <small>example: .product-card</small></span><input maxLength={180} value={form.productSelector} onChange={event => change("productSelector", event.target.value)} placeholder=".product-card"/></label>
+          <label><span>EAN selector <small>example: [data-ean]</small></span><input maxLength={180} value={form.eanSelector} onChange={event => change("eanSelector", event.target.value)} placeholder="[data-ean]"/></label>
+          <label><span>Price selector <small>example: [itemprop=price]</small></span><input maxLength={180} value={form.priceSelector} onChange={event => change("priceSelector", event.target.value)} placeholder="[itemprop=price]"/></label>
+          <label><span>JSON-LD EAN fields <small>comma-separated, e.g. gtin13, barcode</small></span><input maxLength={500} value={form.jsonLdEanFields} onChange={event => change("jsonLdEanFields", event.target.value)} placeholder="gtin13, barcode"/></label>
+          <label><span>JSON-LD price fields <small>comma-separated, e.g. offers.price</small></span><input maxLength={500} value={form.jsonLdPriceFields} onChange={event => change("jsonLdPriceFields", event.target.value)} placeholder="offers.price"/></label>
+          <label><span>JSON-LD currency fields <small>comma-separated, e.g. offers.priceCurrency</small></span><input maxLength={500} value={form.jsonLdCurrencyFields} onChange={event => change("jsonLdCurrencyFields", event.target.value)} placeholder="offers.priceCurrency"/></label>
+          <label className="full"><span>Block or challenge markers <small>one literal phrase per line</small></span><textarea maxLength={1000} value={form.blockPatterns} onChange={event => change("blockPatterns", event.target.value)} placeholder={"challenge page\nplease verify you are human"}/></label>
+          <label className="enabled-control renderer-control"><input type="checkbox" checked={form.allowRenderedFallback} onChange={event => change("allowRenderedFallback", event.target.checked)}/><span>Allow the approved server-side renderer when normal HTML has no product data <small>Requires a separately configured permitted renderer. It is never used to bypass CAPTCHA, login, or rate limits.</small></span></label>
+        </div></details>
+        <label className="enabled-control"><input type="checkbox" checked={form.enabled} onChange={event => change("enabled", event.target.checked)}/><span>Enabled for product searches</span></label>
         <div className="admin-form-actions"><button disabled={saving} type="submit">{saving ? "Saving…" : editingId ? "Save website changes" : "Add website profile"}</button>{editingId && <button className="cancel-edit" disabled={saving} type="button" onClick={resetForm}>Cancel</button>}</div>
       </form>{error && <p className="admin-error" role="alert">{error}</p>}
     </section>
-    <section className="admin-card"><div className="admin-intro"><h2>Existing website profiles</h2><p>Edit a website whenever its HTML or search URL changes. The latest enabled profiles are applied after the submitted website page is loaded, before built-in routes, discovered HTML forms, and generic fallbacks. Dashboard results update when those products are scanned again.</p></div>
-      {!profiles.length ? <div className="admin-empty">No custom website profiles yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Name</th><th>Match</th><th>Search URL</th><th>Status</th><th>Actions</th></tr></thead><tbody>{profiles.map(profile => <tr key={profile.id} className={profile.enabled ? "" : "profile-disabled"}><td><strong>{profile.label}</strong></td><td>{profile.hostname && <code>{profile.hostname}</code>}{profile.htmlSignature && <small title={profile.htmlSignature}>HTML: {profile.htmlSignature}</small>}</td><td><code>{profile.searchUrlTemplate}</code></td><td><span className={`profile-status ${profile.enabled ? "enabled" : "disabled"}`}>{profile.enabled ? "Enabled" : "Disabled"}</span></td><td><div className="profile-actions"><button className="edit-profile" onClick={() => editProfile(profile)}>Edit</button><button className="delete-profile" onClick={() => removeProfile(profile)}>Delete</button></div></td></tr>)}</tbody></table></div>}
+
+    <section className="admin-card"><div className="admin-intro"><h2>Existing website profiles</h2><p>Update a website whenever its search route, HTML, structured data fields, or block markers change. Enabled profiles are applied before built-in routes and generic fallbacks.</p></div>
+      {!profiles.length ? <div className="admin-empty">No custom website profiles yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Name</th><th>Match</th><th>Search URL</th><th>Extraction</th><th>Status</th><th>Actions</th></tr></thead><tbody>{profiles.map(profile => <tr key={profile.id} className={profile.enabled ? "" : "profile-disabled"}><td><strong>{profile.label}</strong></td><td>{profile.hostname && <code>{profile.hostname}</code>}{profile.htmlSignature && <small title={profile.htmlSignature}>HTML: {profile.htmlSignature}</small>}</td><td><code>{profile.searchUrlTemplate}</code></td><td><small>{[profile.productSelector && "selector", profile.jsonLdEanFields && "JSON-LD", profile.blockPatterns && "block markers", profile.allowRenderedFallback && "renderer"].filter(Boolean).join(" · ") || "Automatic"}</small></td><td><span className={`profile-status ${profile.enabled ? "enabled" : "disabled"}`}>{profile.enabled ? "Enabled" : "Disabled"}</span></td><td><div className="profile-actions"><button className="edit-profile" onClick={() => editProfile(profile)}>Edit</button><button className="delete-profile" onClick={() => removeProfile(profile)}>Delete</button></div></td></tr>)}</tbody></table></div>}
     </section>
   </main>;
 }

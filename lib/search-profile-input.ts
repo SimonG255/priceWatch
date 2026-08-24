@@ -6,6 +6,14 @@ export type SearchProfileInput = {
   hostname: string;
   htmlSignature: string;
   searchUrlTemplate: string;
+  productSelector: string;
+  eanSelector: string;
+  priceSelector: string;
+  jsonLdEanFields: string;
+  jsonLdPriceFields: string;
+  jsonLdCurrencyFields: string;
+  blockPatterns: string;
+  allowRenderedFallback: boolean;
   enabled: boolean;
 };
 
@@ -14,6 +22,17 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
   const hostname = normalizeProfileHostname(optionalText(value.hostname, "Hostname must be text."));
   const htmlSignature = optionalText(value.htmlSignature, "HTML signature must be text.").trim();
   const searchUrlTemplate = text(value.searchUrlTemplate, "Enter a search URL template.").trim();
+  const productSelector = validateSelector(optionalText(value.productSelector, "Product selector must be text."), "Product selector");
+  const eanSelector = validateSelector(optionalText(value.eanSelector, "EAN selector must be text."), "EAN selector");
+  const priceSelector = validateSelector(optionalText(value.priceSelector, "Price selector must be text."), "Price selector");
+  const jsonLdEanFields = normalizeJsonLdFields(optionalText(value.jsonLdEanFields, "JSON-LD EAN fields must be text."), "JSON-LD EAN fields");
+  const jsonLdPriceFields = normalizeJsonLdFields(optionalText(value.jsonLdPriceFields, "JSON-LD price fields must be text."), "JSON-LD price fields");
+  const jsonLdCurrencyFields = normalizeJsonLdFields(optionalText(value.jsonLdCurrencyFields, "JSON-LD currency fields must be text."), "JSON-LD currency fields");
+  const blockPatterns = normalizeBlockPatterns(optionalText(value.blockPatterns, "Block patterns must be text."));
+  if (value.allowRenderedFallback != null && typeof value.allowRenderedFallback !== "boolean") {
+    throw new Error("Renderer fallback must be true or false.");
+  }
+  const allowRenderedFallback = value.allowRenderedFallback === true;
   const enabled = value.enabled == null ? true : value.enabled;
 
   if (label.length < 2) throw new Error("Enter a profile name.");
@@ -45,7 +64,12 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
   if (!`${sample.pathname}${sample.search}`.toUpperCase().includes(marker)) throw new Error("Put the {query} placeholder in the URL path or query string.");
   if (hostname && !sameStoreHostname(sample.hostname, hostname)) throw new Error("The search URL must stay on the configured website.");
 
-  return { label, hostname, htmlSignature, searchUrlTemplate, enabled };
+  return {
+    label, hostname, htmlSignature, searchUrlTemplate,
+    productSelector, eanSelector, priceSelector,
+    jsonLdEanFields, jsonLdPriceFields, jsonLdCurrencyFields,
+    blockPatterns, allowRenderedFallback, enabled,
+  };
 }
 
 export function searchProfileIdentity(profile: Pick<SearchProfileInput, "hostname" | "htmlSignature">) {
@@ -75,4 +99,34 @@ function text(value: unknown, message: string) {
 function optionalText(value: unknown, message: string) {
   if (value == null) return "";
   return text(value, message);
+}
+
+function validateSelector(value: string, label: string) {
+  const selector = value.trim();
+  if (!selector) return "";
+  if (selector.length > 180) throw new Error(`${label} must be 180 characters or fewer.`);
+  // Matches the intentionally limited selector subset implemented by the
+  // server-side extractor. Arbitrary CSS and regular expressions are not
+  // accepted as administrator configuration.
+  const valid = /^(?:[a-z][\w-]*)?(?:#[\w-]+|\.[\w-]+|\[(?:data-[\w-]+|itemprop|data-testid|id|class)(?:=(?:"[^"]*"|'[^']*'|[\w.-]+))?\])?$/i.test(selector);
+  if (!valid || !/[.#\[]|^[a-z]/i.test(selector)) throw new Error(`${label} must be a simple tag, .class, #id, or supported attribute selector.`);
+  return selector;
+}
+
+function normalizeJsonLdFields(value: string, label: string) {
+  const fields = value.split(/[\n,]/).map((field) => field.trim()).filter(Boolean);
+  if (fields.length > 8) throw new Error(`${label} can include at most 8 field paths.`);
+  if (fields.some((field) => field.length > 80 || !/^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*){0,4}$/.test(field))) {
+    throw new Error(`${label} must contain simple JSON field paths, such as gtin13 or offers.price.`);
+  }
+  return [...new Set(fields)].join(",");
+}
+
+function normalizeBlockPatterns(value: string) {
+  const patterns = value.split(/\n/).map((pattern) => pattern.trim()).filter(Boolean);
+  if (patterns.length > 8) throw new Error("Add at most 8 block or challenge markers.");
+  if (patterns.some((pattern) => pattern.length > 120 || /[\u0000-\u001f]/.test(pattern))) {
+    throw new Error("Block or challenge markers must be short literal text.");
+  }
+  return [...new Set(patterns)].join("\n");
 }

@@ -3,19 +3,21 @@ import { ensureProductsSchema, getDb } from "../../../../db";
 import { customSearchProfiles, monitoredProducts, monitoredWebsites } from "../../../../db/schema";
 import { getAdminEmail } from "../../../../lib/admin-auth";
 import { listAdminWebsiteInventory } from "../../../../lib/admin-website-inventory";
+import { listScraperDomainHealth } from "../../../../lib/scraper-state";
 import { searchProfileIdentity, validateSearchProfileInput } from "../../../../lib/search-profile-input";
 
 export async function GET() {
   if (!await getAdminEmail()) return Response.json({ error: "Administrator access required." }, { status: 403 });
   await ensureProductsSchema();
   const db = getDb();
-  const [profiles, savedWebsites, productWebsites] = await Promise.all([
+  const [profiles, savedWebsites, productWebsites, health] = await Promise.all([
     db.select().from(customSearchProfiles).orderBy(desc(customSearchProfiles.createdAt)),
     db.select({ url: monitoredWebsites.url }).from(monitoredWebsites),
     db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts),
+    listScraperDomainHealth(),
   ]);
   const websites = listAdminWebsiteInventory([...savedWebsites, ...productWebsites]);
-  return Response.json({ profiles, websites }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({ profiles, websites, health }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(request: Request) {

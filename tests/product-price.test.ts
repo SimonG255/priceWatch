@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { extractProductMatch, parsePriceCents } from "../lib/product-extraction.ts";
+import { resolveStoreExtractionProfile } from "../lib/site-search-profiles.ts";
+
+function fixture(name: string) {
+  return readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+}
 
 test("selects the JSON-LD product whose EAN matches", () => {
   const html = `
@@ -59,4 +65,67 @@ test("uses AggregateOffer lowPrice when an exact product publishes a range", () 
   })}</script>`;
   const result = extractProductMatch(html, "https://shop.example/sony", "Sony WH-1000XM6", "4548736160000");
   assert.equal(result.priceCents, 34900);
+});
+
+test("fixture: exact JSON-LD GTIN selects its linked Offer.price and canonical URL", () => {
+  const result = extractProductMatch(
+    fixture("structured-product-exact-gtin.html"),
+    "https://shop.example/search?q=8806095539737",
+    "Samsung WW11DG6B25LEU4",
+    "8806095539737",
+  );
+
+  assert.equal(result.structuredProduct, true);
+  assert.equal(result.structuredExactEan, true);
+  assert.equal(result.eanMatch, true);
+  assert.equal(result.priceCents, 49990);
+  assert.equal(result.currency, "EUR");
+  assert.equal(result.priceSource, "structured");
+  assert.equal(result.canonicalUrl, "https://shop.example/products/samsung-ww11dg6b25leu4");
+  assert.equal(result.url, result.canonicalUrl);
+  assert.equal(result.confidence, "high");
+});
+
+test("fixture: a store profile selector extracts the verified product price", () => {
+  const result = extractProductMatch(
+    fixture("profile-selector-product.html"),
+    "https://shop.example/search?q=8806095539737",
+    "Samsung WW11DG6B25LEU4",
+    "8806095539737",
+    {
+      id: "fixture-store",
+      productSelector: ".product-card",
+      eanSelector: "[data-testid=product-ean]",
+      priceSelector: ".price-current",
+    },
+  );
+
+  assert.equal(result.structuredProduct, false);
+  assert.equal(result.eanMatch, true);
+  assert.equal(result.priceCents, 49990);
+  assert.equal(result.priceSource, "profile-selector");
+  assert.equal(result.canonicalUrl, "https://shop.example/products/samsung-ww11dg6b25leu4");
+  assert.equal(result.confidence, "medium");
+});
+
+test("fixture: Trgovine Jager resolves its challenge profile and extracts structured product data", () => {
+  const root = new URL("https://www.trgovinejager.com/");
+  const profile = resolveStoreExtractionProfile(root, fixture("trgovine-jager-product.html"));
+
+  assert.equal(profile?.id, "trgovine-jager");
+  assert.equal(profile?.blockPatterns?.includes("/cdn-cgi/challenge-platform"), true);
+  assert.equal(profile?.blockPatterns?.includes("potrebno je varnostno preverjanje"), true);
+
+  const result = extractProductMatch(
+    fixture("trgovine-jager-product.html"),
+    "https://www.trgovinejager.com/iskalnik/?isci=8806095539737",
+    "Samsung WW11DG6B25LEU4",
+    "8806095539737",
+    profile,
+  );
+
+  assert.equal(result.structuredExactEan, true);
+  assert.equal(result.priceCents, 49990);
+  assert.equal(result.priceSource, "structured");
+  assert.equal(result.canonicalUrl, "https://www.trgovinejager.com/pralni-stroji/samsung-ww11dg6b25leu4/");
 });

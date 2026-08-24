@@ -9,8 +9,31 @@ test("normalizes a store hostname and preserves editable profile fields", () => 
   });
   assert.deepEqual(profile, {
     label: "Example Store", hostname: "store.example", htmlSignature: "data-shop",
-    searchUrlTemplate: "/search?q={query}", enabled: false,
+    searchUrlTemplate: "/search?q={query}",
+    productSelector: "", eanSelector: "", priceSelector: "",
+    jsonLdEanFields: "", jsonLdPriceFields: "", jsonLdCurrencyFields: "",
+    blockPatterns: "", allowRenderedFallback: false, enabled: false,
   });
+});
+
+test("keeps safe per-store extraction and challenge settings", () => {
+  const profile = validateSearchProfileInput({
+    label: "Catalog", hostname: "store.example", searchUrlTemplate: "/find/{query}",
+    productSelector: ".product-card", eanSelector: "[data-ean]", priceSelector: "[itemprop=price]",
+    jsonLdEanFields: "barcode, product.gtin13", jsonLdPriceFields: "offers.price",
+    jsonLdCurrencyFields: "offers.priceCurrency", blockPatterns: "verify you are human\nchallenge page",
+    allowRenderedFallback: true,
+  });
+  assert.equal(profile.productSelector, ".product-card");
+  assert.equal(profile.eanSelector, "[data-ean]");
+  assert.equal(profile.jsonLdEanFields, "barcode,product.gtin13");
+  assert.equal(profile.blockPatterns, "verify you are human\nchallenge page");
+  assert.equal(profile.allowRenderedFallback, true);
+});
+
+test("rejects unsupported selector syntax and non-boolean renderer settings", () => {
+  assert.throws(() => validateSearchProfileInput({ label: "Store", hostname: "store.example", searchUrlTemplate: "/search?q={query}", priceSelector: ".card .price" }), /simple tag/i);
+  assert.throws(() => validateSearchProfileInput({ label: "Store", hostname: "store.example", searchUrlTemplate: "/search?q={query}", allowRenderedFallback: "yes" }), /renderer/i);
 });
 
 test("allows HTML-only profiles only with a relative store-local URL", () => {

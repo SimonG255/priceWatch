@@ -1,3 +1,5 @@
+import type { StoreExtractionProfile } from "./scraper-types.ts";
+
 export type SearchCandidate = {
   url: string;
   profileId: string;
@@ -10,6 +12,14 @@ export type CustomSearchProfile = {
   hostname: string;
   htmlSignature: string;
   searchUrlTemplate: string;
+  productSelector?: string;
+  eanSelector?: string;
+  priceSelector?: string;
+  jsonLdEanFields?: string;
+  jsonLdPriceFields?: string;
+  jsonLdCurrencyFields?: string;
+  blockPatterns?: string;
+  allowRenderedFallback?: boolean;
 };
 
 type SearchProfile = {
@@ -19,6 +29,7 @@ type SearchProfile = {
   hostPattern?: RegExp;
   htmlPattern?: RegExp;
   suppressesGenericFallback?: boolean;
+  extraction?: StoreExtractionProfile;
 };
 
 /**
@@ -35,6 +46,10 @@ export const WEBSITE_SEARCH_PROFILES: readonly SearchProfile[] = [
     // This is Jager's published storefront-search route. Trying guessed
     // /search?... URLs after it adds noise and can trigger extra rate limits.
     suppressesGenericFallback: true,
+    extraction: {
+      id: "trgovine-jager",
+      blockPatterns: ["cf-chl-", "/cdn-cgi/challenge-platform", "potrebno je varnostno preverjanje"],
+    },
   },
   {
     id: "amazon",
@@ -115,18 +130,14 @@ export function buildSearchCandidates(root: URL, queries: string[], html?: strin
   };
 
   for (const profile of customProfiles) {
-    const hostMatches = !profile.hostname || sameStoreHostname(root.hostname, profile.hostname);
-    const htmlMatches = !profile.htmlSignature || Boolean(html?.toLowerCase().includes(profile.htmlSignature.toLowerCase()));
-    if (!hostMatches || !htmlMatches) continue;
+    if (!matchesCustomProfile(profile, root, html)) continue;
     const candidateCount = candidates.length;
     addProfileCandidates(add, root, queries, { id: `custom-${profile.id}`, label: profile.label, templates: [profile.searchUrlTemplate] });
     suppressesGenericFallback ||= candidates.length > candidateCount;
   }
 
   for (const profile of WEBSITE_SEARCH_PROFILES) {
-    const matchesHost = profile.hostPattern?.test(root.hostname) ?? false;
-    const matchesHtml = html ? profile.htmlPattern?.test(html) ?? false : false;
-    if (!matchesHost && !matchesHtml) continue;
+    if (!matchesBuiltInProfile(profile, root, html)) continue;
     const candidateCount = candidates.length;
     addProfileCandidates(add, root, queries, profile);
     if (profile.suppressesGenericFallback && candidates.length > candidateCount) suppressesGenericFallback = true;
@@ -138,6 +149,60 @@ export function buildSearchCandidates(root: URL, queries: string[], html?: strin
 
   if (!suppressesGenericFallback) addProfileCandidates(add, root, queries, GENERIC_SEARCH_PROFILE);
   return candidates;
+}
+
+/**
+ * Resolves the extraction configuration independently of route generation so a
+ * store can use selectors, JSON-LD aliases, and challenge markers together.
+ * Custom profiles override built-ins for the same store while preserving known
+ * block markers.
+ */
+export function resolveStoreExtractionProfile(root: URL, html: string | undefined, customProfiles: CustomSearchProfile[] = []): StoreExtractionProfile | undefined {
+  const builtIn = WEBSITE_SEARCH_PROFILES.find((profile) => matchesBuiltInProfile(profile, root, html));
+  const custom = customProfiles.find((profile) => matchesCustomProfile(profile, root, html));
+  const customExtraction = custom ? extractionFromCustomProfile(custom) : undefined;
+  const builtInPatterns = builtIn?.extraction?.blockPatterns ?? [];
+  const customPatterns = customExtraction?.blockPatterns ?? [];
+  const profile = compactExtraction({
+    ...(builtIn?.extraction ?? {}),
+    ...(customExtraction ?? {}),
+    blockPatterns: [...new Set([...builtInPatterns, ...customPatterns])],
+    id: custom ? `custom-${custom.id}` : builtIn?.id,
+  });
+  return Object.keys(profile).length ? profile : undefined;
+}
+
+function matchesCustomProfile(profile: CustomSearchProfile, root: URL, html?: string) {
+  const hostMatches = !profile.hostname || sameStoreHostname(root.hostname, profile.hostname);
+  const htmlMatches = !profile.htmlSignature || Boolean(html?.toLowerCase().includes(profile.htmlSignature.toLowerCase()));
+  return hostMatches && htmlMatches;
+}
+
+function matchesBuiltInProfile(profile: SearchProfile, root: URL, html?: string) {
+  const matchesHost = profile.hostPattern?.test(root.hostname) ?? false;
+  const matchesHtml = html ? profile.htmlPattern?.test(html) ?? false : false;
+  return matchesHost || matchesHtml;
+}
+
+function extractionFromCustomProfile(profile: CustomSearchProfile): StoreExtractionProfile {
+  return compactExtraction({
+    productSelector: profile.productSelector,
+    eanSelector: profile.eanSelector,
+    priceSelector: profile.priceSelector,
+    jsonLdEanFields: splitProfileList(profile.jsonLdEanFields),
+    jsonLdPriceFields: splitProfileList(profile.jsonLdPriceFields),
+    jsonLdCurrencyFields: splitProfileList(profile.jsonLdCurrencyFields),
+    blockPatterns: splitProfileList(profile.blockPatterns),
+    allowRenderedFallback: profile.allowRenderedFallback,
+  });
+}
+
+function splitProfileList(value: string | undefined) {
+  return value?.split(/[\n,]/).map((item) => item.trim()).filter(Boolean) ?? [];
+}
+
+function compactExtraction(profile: StoreExtractionProfile) {
+  return Object.fromEntries(Object.entries(profile).filter(([, value]) => value !== undefined && value !== "" && (!Array.isArray(value) || value.length))) as StoreExtractionProfile;
 }
 
 export function sameStoreHostname(candidateHostname: string, originalHostname: string) {

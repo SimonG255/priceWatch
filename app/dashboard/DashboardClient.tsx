@@ -8,9 +8,9 @@ import { createClient as createSupabaseClient } from "../../lib/supabase/client"
 type IconName = "grid" | "box" | "settings" | "plus" | "search" | "bolt" | "external" | "menu" | "close" | "upload" | "download" | "refresh" | "trash" | "file";
 type Product = {
   id: string; websiteUrl: string; productName: string; ean: string; sku: string; notes: string;
-  status: "queued" | "searching" | "found" | "not_found" | "blocked" | "error";
+  status: "queued" | "searching" | "found" | "not_found" | "blocked" | "unavailable" | "needs_review" | "error";
   statusMessage: string; matchedUrl: string | null; resultTitle: string | null; priceCents: number | null;
-  currency: string | null; inStock: boolean | null; matchType: string | null; lastCheckedAt: string | null; createdAt: string;
+  currency: string | null; inStock: boolean | null; matchType: string | null; confidence: string | null; evidenceJson: string | null; lastCheckedAt: string | null; createdAt: string;
 };
 type Website = { id: string; url: string; createdAt: string };
 type ProductDraft = { id: string; productName: string; ean: string; sku: string };
@@ -111,7 +111,7 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       return product;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Search failed.";
-      setProducts(current => current.map(product => product.id === id ? { ...product, status: "error", statusMessage: message } : product));
+      setProducts(current => current.map(product => product.id === id ? { ...product, status: "unavailable", statusMessage: message } : product));
       if (!quiet) setError(message);
       return null;
     }
@@ -193,15 +193,15 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
 
   async function exportWorkbook() {
     if (!products.length) { showToast("Add a product before exporting"); return; }
-    const header = ["Website URL", "Product Name", "EAN", "SKU", "Notes", "Status", "Matched URL", "Result title", "Price", "Currency", "In stock", "Last checked"];
+    const header = ["Website URL", "Product Name", "EAN", "SKU", "Notes", "Status", "Confidence", "Matched URL", "Result title", "Price", "Currency", "In stock", "Last checked"];
     const data = [
       header.map(value => ({ value, type: String, fontWeight: "bold" as const, color: "#FFFFFF", backgroundColor: "#123F37" })),
       ...products.map(product => [
-        product.websiteUrl, product.productName, product.ean, product.sku, product.notes, product.status, product.matchedUrl ?? "", product.resultTitle ?? "",
+        product.websiteUrl, product.productName, product.ean, product.sku, product.notes, product.status, product.confidence ?? "", product.matchedUrl ?? "", product.resultTitle ?? "",
         product.priceCents == null ? "" : product.priceCents / 100, product.currency ?? "", product.inStock == null ? "" : product.inStock ? "Yes" : "No", product.lastCheckedAt ?? "",
-      ].map((value, index) => ({ value, type: index === 8 && typeof value === "number" ? Number : String }))),
+      ].map((value, index) => ({ value, type: index === 9 && typeof value === "number" ? Number : String }))),
     ];
-    await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 14, 36, 30, 12, 10, 10, 22].map(width => ({ width })) });
+    await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 14, 12, 36, 30, 12, 10, 10, 22].map(width => ({ width })) });
     showToast("Excel export downloaded");
   }
 
