@@ -50,5 +50,10 @@ export function prepareBulkProductSearches(
 }
 
 function sameProductDetails(left: ProductDetailsInput, right: ProductDetailsInput) {
-  return left.productName === right.productName && left.sku === right.sku && left.notes === right.notes;
+  return left.productName === right.productName
+    && left.sku === right.sku
+    && left.notes === right.notes
+    && left.ownPriceCents === right.ownPriceCents
+    && left.alertOnPriceDrop === right.alertOnPriceDrop
+    && left.alertOnRestock === right.alertOnRestock;
 }

@@ -1,6 +1,6 @@
 import { asc, eq } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../db";
-import { monitoredProducts, monitoredWebsites } from "../../../db/schema";
+import { monitoredWebsites } from "../../../db/schema";
 import { getCurrentUserEmail } from "../../../lib/current-user";
 import { validateWebsiteUrl } from "../../../lib/product-input";
 
@@ -9,8 +9,6 @@ export async function GET() {
   if (!ownerEmail) return Response.json({ error: "Sign in to view your websites." }, { status: 401 });
   await ensureProductsSchema();
   const db = getDb();
-  const existingProducts = await db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts).where(eq(monitoredProducts.ownerEmail, ownerEmail));
-  for (const { url } of existingProducts) await db.insert(monitoredWebsites).values({ id: crypto.randomUUID(), ownerEmail, url }).onConflictDoNothing();
   const websites = await db.select().from(monitoredWebsites).where(eq(monitoredWebsites.ownerEmail, ownerEmail)).orderBy(asc(monitoredWebsites.createdAt));
   return Response.json({ websites });
 }

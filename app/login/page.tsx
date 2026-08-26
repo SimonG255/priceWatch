@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import AuthForm from "./AuthForm";
 import { isSupabaseConfigured } from "../../lib/supabase/config";
+import { normalizePlanSelection } from "../../lib/plans";
 
 export const metadata: Metadata = {
   title: "Sign in",
@@ -17,10 +18,10 @@ function Bolt() {
 
 export default async function LoginPage({ searchParams }: { searchParams: Promise<{ plan?: string; urls?: string; checks?: string }> }) {
   const params = await searchParams;
-  const urls = Math.min(5000, Math.max(10, Number(params.urls) || 250));
-  const checks = [1, 4, 12, 24].includes(Number(params.checks)) ? Number(params.checks) : 4;
-  const hasCustomPlan = params.plan === "custom";
-  const returnTo = hasCustomPlan ? `/dashboard?plan=custom&urls=${urls}&checks=${checks}` : "/dashboard";
+  const selectedPlan = normalizePlanSelection(params);
+  const returnTo = selectedPlan
+    ? `/dashboard?plan=${selectedPlan.key}&urls=${selectedPlan.urlLimit}&checks=${selectedPlan.checksPerDay}`
+    : "/dashboard";
   const signInHref = `/signin-with-chatgpt?return_to=${encodeURIComponent(returnTo)}`;
   return (
     <main className="login-page">
@@ -38,7 +39,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         <div className="login-card">
           <h2>Welcome back</h2>
           <p>Sign in securely to access your products, price history, and alert rules.</p>
-          <AuthForm configured={isSupabaseConfigured()} returnTo={returnTo} chatGPTSignInHref={signInHref} customPlan={hasCustomPlan ? { urls, checks } : null}/>
+          <AuthForm configured={isSupabaseConfigured()} returnTo={returnTo} chatGPTSignInHref={signInHref} customPlan={selectedPlan?.key === "custom" ? { urls: selectedPlan.urlLimit, checks: selectedPlan.checksPerDay } : null}/>
           <div className="modal-note"><Bolt/>Passwords are handled by Supabase Auth and are never stored by PriceWatch.</div>
           <p className="login-help">By continuing, you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p>
         </div>

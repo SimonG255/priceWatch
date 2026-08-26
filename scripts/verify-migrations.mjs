@@ -45,7 +45,7 @@ for (const column of ["cursor_index", "pending_outcome_json", "pending_started_a
 }
 
 // Schedule selection is intentionally one JSON bind instead of 500 `IN (?)`
-// binds, matching D1's bounded query contract.
+// binds, keeping the query parameter count bounded.
 const insertProduct = database.prepare(`INSERT INTO monitored_products
   (id, owner_email, website_url, hostname, product_name, ean) VALUES (?, 'owner@example.com', ?, ?, 'Product', ?)`);
 const selectedIds = [];

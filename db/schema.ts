@@ -12,6 +12,9 @@ export const monitoredProducts = pgTable(
     ean: text("ean").notNull(),
     sku: text("sku").notNull().default(""),
     notes: text("notes").notNull().default(""),
+    ownPriceCents: integer("own_price_cents"),
+    alertOnPriceDrop: boolean("alert_on_price_drop").notNull().default(true),
+    alertOnRestock: boolean("alert_on_restock").notNull().default(true),
     status: text("status").notNull().default("queued"),
     statusMessage: text("status_message").notNull().default("Ready to search"),
     matchedUrl: text("matched_url"),
@@ -73,6 +76,42 @@ export const monitoredWebsites = pgTable(
   (table) => [
     index("monitored_websites_owner_idx").on(table.ownerEmail),
     uniqueIndex("monitored_websites_owner_url_uidx").on(table.ownerEmail, table.url),
+  ],
+);
+
+export const userPlans = pgTable("user_plans", {
+  ownerEmail: text("owner_email").primaryKey(),
+  planKey: text("plan_key").notNull().default("business"),
+  urlLimit: integer("url_limit").notNull().default(150),
+  checksPerDay: integer("checks_per_day").notNull().default(4),
+  createdAt: text("created_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at")
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const customerAlertEvents = pgTable(
+  "customer_alert_events",
+  {
+    id: text("id").primaryKey(),
+    ownerEmail: text("owner_email").notNull(),
+    productId: text("product_id").notNull(),
+    alertType: text("alert_type").notNull(),
+    state: text("state").notNull().default("open"),
+    dedupeKey: text("dedupe_key").notNull(),
+    message: text("message").notNull(),
+    previousValueJson: text("previous_value_json"),
+    currentValueJson: text("current_value_json").notNull(),
+    detectedAt: text("detected_at").notNull(),
+    sentAt: text("sent_at"),
+    deliveryError: text("delivery_error"),
+  },
+  (table) => [
+    uniqueIndex("customer_alert_events_dedupe_uidx").on(table.dedupeKey),
+    index("customer_alert_events_owner_time_idx").on(table.ownerEmail, table.detectedAt),
+    index("customer_alert_events_product_time_idx").on(table.productId, table.detectedAt),
   ],
 );
 

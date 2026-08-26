@@ -3,6 +3,7 @@ import { ensureProductsSchema, getDb } from "../../../../db";
 import { monitoredProducts, monitoredWebsites } from "../../../../db/schema";
 import { prepareBulkProductSearches } from "../../../../lib/bulk-product-input";
 import { getCurrentUserEmail } from "../../../../lib/current-user";
+import { assertProductCapacity, ensureDefaultSchedule } from "../../../../lib/plans";
 
 export async function POST(request: Request) {
   const ownerEmail = await getCurrentUserEmail();
@@ -26,6 +27,11 @@ export async function POST(request: Request) {
       body.products,
       websites.filter((website): website is { id: string; url: string } => website != null),
     );
+    const existingProducts = await db.select({ websiteUrl: monitoredProducts.websiteUrl, ean: monitoredProducts.ean })
+      .from(monitoredProducts).where(eq(monitoredProducts.ownerEmail, ownerEmail));
+    const existingKeys = new Set(existingProducts.map((product) => `${product.websiteUrl}\u0000${product.ean}`));
+    const additionalProducts = prepared.inputs.filter((input) => !existingKeys.has(`${input.websiteUrl}\u0000${input.ean}`)).length;
+    const plan = await assertProductCapacity(ownerEmail, additionalProducts);
     const products = [];
     for (const input of prepared.inputs) {
       const hostname = new URL(input.websiteUrl).hostname.toLowerCase().replace(/^www\./, "");
@@ -40,6 +46,9 @@ export async function POST(request: Request) {
           ean: input.ean,
           sku: input.sku ?? "",
           notes: input.notes ?? "",
+          ownPriceCents: input.ownPriceCents,
+          alertOnPriceDrop: input.alertOnPriceDrop,
+          alertOnRestock: input.alertOnRestock,
           status: "queued",
           statusMessage: "Ready for bulk search",
         })
@@ -50,6 +59,9 @@ export async function POST(request: Request) {
             productName: input.productName,
             sku: input.sku ?? "",
             notes: input.notes ?? "",
+            ownPriceCents: input.ownPriceCents,
+            alertOnPriceDrop: input.alertOnPriceDrop,
+            alertOnRestock: input.alertOnRestock,
             status: "queued",
             statusMessage: "Ready for bulk search",
             updatedAt: new Date().toISOString(),
@@ -58,6 +70,7 @@ export async function POST(request: Request) {
         .returning();
       products.push(product);
     }
+    await ensureDefaultSchedule(ownerEmail, plan);
     return Response.json(
       {
         products,

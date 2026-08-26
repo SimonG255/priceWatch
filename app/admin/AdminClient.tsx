@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ScraperOperations from "./ScraperOperations";
+import { formatAppDateTime } from "../../lib/time-zone";
 
 type Profile = {
   id: string;
@@ -110,7 +111,7 @@ function outcomeLabel(value: string | null) {
 }
 
 function checkedLabel(value: string | null) {
-  return value ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)) : "Never";
+  return value ? formatAppDateTime(value) : "Never";
 }
 
 export default function AdminClient({ email, aiConfigured }: { email: string; aiConfigured: boolean }) {
@@ -209,6 +210,18 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
   }
 
   async function testProfile() {
+    if (!testUrl.trim()) {
+      setError("Enter the public URL to use for the profile test.");
+      return;
+    }
+    if (testName.trim().length < 2) {
+      setError("Enter the product name used for the test.");
+      return;
+    }
+    if (![8, 12, 13, 14].includes(testEan.length)) {
+      setError("Enter an 8, 12, 13, or 14 digit EAN/GTIN.");
+      return;
+    }
     setTesting(true);
     setError("");
     setTestResult(null);
@@ -272,7 +285,7 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
       </form>
       <div className="profile-test-panel">
         <div><strong>Test before saving</strong><small>Runs the draft profile against one public URL using live robots, cooldown, timeout, and size budgets. It does not save the result.</small></div>
-        <div className="profile-test-inputs"><label><span>Public test URL</span><input type="url" value={testUrl} onChange={event => setTestUrl(event.target.value)} placeholder="https://store.example/product-or-search"/></label><label><span>Expected product</span><input value={testName} onChange={event => setTestName(event.target.value)} placeholder="Product name"/></label><label><span>EAN / GTIN</span><input inputMode="numeric" value={testEan} onChange={event => setTestEan(event.target.value.replace(/\D/g, ""))} placeholder="EAN / GTIN"/></label><button type="button" disabled={testing || !testUrl || !testName || !testEan} onClick={testProfile}>{testing ? "Testing…" : "Run profile test"}</button></div>
+        <div className="profile-test-inputs"><label><span>Public test URL</span><input type="url" value={testUrl} onChange={event => { setTestUrl(event.target.value); setError(""); }} placeholder="https://store.example/product-or-search"/></label><label><span>Expected product</span><input value={testName} onChange={event => { setTestName(event.target.value); setError(""); }} placeholder="Product name"/></label><label><span>EAN / GTIN</span><input inputMode="numeric" value={testEan} onChange={event => { setTestEan(event.target.value.replace(/\D/g, "")); setError(""); }} placeholder="EAN / GTIN"/></label><button type="button" disabled={testing || !testUrl.trim() || !testName.trim() || !testEan} onClick={testProfile}>{testing ? "Testing…" : "Run profile test"}</button></div>
         {testResult && <div className={`profile-test-result ${testResult.result.status}`}><div><span className={`health-status ${testResult.result.status}`}>{testResult.result.status.replaceAll("_", " ")}</span><strong>{testResult.result.message}</strong></div><small>Reason: {testResult.result.reasonCode || "none"} · profile health: {(testResult.profileHealth ?? testResult.result.profileHealth)?.score ?? "—"}{(testResult.profileHealth ?? testResult.result.profileHealth) ? "%" : ""}{testResult.result.confidenceScores ? ` · confidence: ${testResult.result.confidenceScores.overall}%` : ""}</small>{(testResult.result.matchedUrl || testResult.result.evidence?.canonicalUrl) && <a href={testResult.result.matchedUrl || testResult.result.evidence?.canonicalUrl} target="_blank" rel="noreferrer">Open matched page</a>}<details><summary>{testResult.attempts.length} audited attempts</summary><ol>{testResult.attempts.map((attempt, index) => <li key={`${attempt.url}-${index}`}><code>{attempt.url}</code><span>{attempt.reasonCode} · {attempt.httpStatus ?? "no HTTP status"} · {attempt.durationMs} ms</span></li>)}</ol></details></div>}
       </div>
       {error && <p className="admin-error" role="alert">{error}</p>}

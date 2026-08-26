@@ -292,14 +292,14 @@ test("reports a configured website challenge as blocked", async (t) => {
   installFetchMock(t, (url) => {
     if (url === openAiUrl) { aiCalled = true; return aiReviewResponse({ verdict: "not_found", confirmedUrl: null, retryUrls: [], issues: ["not_found"] }); }
     if (url === storeUrl) return htmlResponse("<html><title>Store</title><body>Welcome</body></html>");
-    if (url.startsWith("https://shop.example/configured-search")) return htmlResponse("<html><title>Just a moment...</title><body>/cdn-cgi/challenge-platform</body></html>");
+    if (url.startsWith("https://shop.example/configured-search")) return htmlResponse("<html><title>Just a moment...</title><body>Checking your browser before accessing</body></html>");
     return htmlResponse("Not found", 404);
   });
 
   const result = await searchPublicWebsite(storeUrl, productName, ean, profiles);
 
   assert.equal(result.status, "blocked");
-  assert.match(result.message, /does not bypass CAPTCHAs/i);
+  assert.match(result.message, /challenge detected/i);
   assert.equal(aiCalled, false);
 });
 
@@ -357,12 +357,12 @@ test("Jager's public sitemap exposes the canonical page when its search is chall
     if (url === openAiUrl) throw new Error("AI must not run after sitemap-page verification is blocked.");
     calls.push(url);
     if (url === jagerRoot) return htmlResponse("<html><title>Jager</title><body>Store</body></html>");
-    if (url.startsWith("https://www.trgovinejager.com/iskalnik/")) return htmlResponse("<html><title>Just a moment...</title><body>/cdn-cgi/challenge-platform</body></html>");
+    if (url.startsWith("https://www.trgovinejager.com/iskalnik/")) return htmlResponse("<html><title>Just a moment...</title><body>Checking your browser before accessing</body></html>");
     if (url === "https://www.trgovinejager.com/robots.txt") return htmlResponse("Sitemap: https://www.trgovinejager.com/f/sitemaps/sitemap_index.xml", 200);
     if (url === "https://www.trgovinejager.com/f/sitemaps/sitemap_index.xml") return htmlResponse("<sitemapindex><sitemap><loc>https://www.trgovinejager.com/f/sitemaps/sl/sitemap-sl.xml</loc></sitemap></sitemapindex>");
     if (url === "https://www.trgovinejager.com/f/sitemaps/sl/sitemap-sl.xml") return htmlResponse("<sitemapindex><sitemap><loc>https://www.trgovinejager.com/f/sitemaps/sl/sitemap_products_sl_1.xml</loc></sitemap></sitemapindex>");
     if (url === "https://www.trgovinejager.com/f/sitemaps/sl/sitemap_products_sl_1.xml") return htmlResponse(`<urlset><url><loc>${canonicalUrl}</loc></url></urlset>`);
-    if (url === canonicalUrl) return htmlResponse("<html><title>Just a moment...</title><body>/cdn-cgi/challenge-platform</body></html>");
+    if (url === canonicalUrl) return htmlResponse("<html><title>Just a moment...</title><body>Checking your browser before accessing</body></html>");
     return htmlResponse("Not found", 404);
   });
 
@@ -384,7 +384,7 @@ test("reports a sitemap candidate page returning 503 as unavailable", async (t) 
   installFetchMock(t, (url) => {
     if (url === openAiUrl) throw new Error("AI must not run after a sitemap-page availability failure.");
     if (url === jagerRoot) return htmlResponse("<html><title>Jager</title><body>Store</body></html>");
-    if (url.startsWith("https://www.trgovinejager.com/iskalnik/")) return htmlResponse("<html><title>Just a moment...</title><body>/cdn-cgi/challenge-platform</body></html>");
+    if (url.startsWith("https://www.trgovinejager.com/iskalnik/")) return htmlResponse("<html><title>Just a moment...</title><body>Checking your browser before accessing</body></html>");
     if (url === "https://www.trgovinejager.com/robots.txt") return htmlResponse("Sitemap: https://www.trgovinejager.com/sitemap-products.xml");
     if (url === "https://www.trgovinejager.com/sitemap-products.xml") return htmlResponse(`<urlset><url><loc>${canonicalUrl}</loc></url></urlset>`);
     if (url === canonicalUrl) return htmlResponse("Temporarily unavailable", 503);

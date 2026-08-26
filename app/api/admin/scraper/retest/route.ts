@@ -8,7 +8,7 @@ const DEFAULT_STATUSES = new Set(["blocked", "unavailable", "needs_review", "not
 
 /**
  * Processes exactly one product per HTTP invocation. The admin client follows
- * the returned continuation, so D1 and Worker budgets reset between scans.
+ * the returned continuation, so request budgets reset between scans.
  */
 export async function POST(request: Request) {
   if (!(await getAdminEmail())) return Response.json({ error: "Administrator access required." }, { status: 403 });

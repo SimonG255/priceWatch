@@ -2,6 +2,7 @@ import { and, desc, eq, gt, ne, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   customSearchProfiles,
+  customerAlertEvents,
   scrapeAttempts,
   scrapeRuns,
   scraperAlertEvents,
@@ -161,7 +162,15 @@ export async function markScrapeRunSuperseded(runId: string, ownerEmail: string,
 export async function completeScrapeRun(input: {
   runId: string;
   ownerEmail: string;
-  product: { id: string; ean: string; websiteUrl: string };
+  product: {
+    id: string;
+    ean: string;
+    websiteUrl: string;
+    productName?: string;
+    ownPriceCents?: number | null;
+    alertOnPriceDrop?: boolean;
+    alertOnRestock?: boolean;
+  };
   result: ProductSearchResult;
 }) {
   const { runId, ownerEmail, product, result } = input;
@@ -223,6 +232,9 @@ export async function completeScrapeRun(input: {
   }
 
   if (result.status === "found" && result.priceCents != null && result.currency && result.matchedUrl) {
+    const [previous] = await getDb().select().from(priceSnapshots)
+      .where(and(eq(priceSnapshots.ownerEmail, ownerEmail), eq(priceSnapshots.productId, product.id)))
+      .orderBy(desc(priceSnapshots.capturedAt)).limit(1);
     const scores = result.confidenceScores;
     await getDb()
       .insert(priceSnapshots)
@@ -247,6 +259,7 @@ export async function completeScrapeRun(input: {
         capturedAt: completedAt,
       })
       .onConflictDoNothing({ target: priceSnapshots.scanId });
+    await createCustomerAlerts({ ownerEmail, product, result, previous, detectedAt: completedAt });
   }
 
   await updateProfileHealth(result, completedAt);
@@ -353,8 +366,14 @@ export async function evaluateScraperAlerts(hostname: string) {
     const operationalSuccess = state.successfulChecks + state.notFoundChecks;
     const successRateBps = state.totalChecks ? Math.round((operationalSuccess / state.totalChecks) * 10_000) : 10_000;
     if (state.totalChecks < rule.minimumChecks) continue;
-    if (successRateBps >= rule.minimumSuccessRateBps && state.consecutiveFailures < rule.maximumConsecutiveFailures)
+    if (successRateBps >= rule.minimumSuccessRateBps && state.consecutiveFailures < rule.maximumConsecutiveFailures) {
+      await db.update(scraperAlertEvents).set({ state: "resolved", resolvedAt: now }).where(and(
+        eq(scraperAlertEvents.ruleId, rule.id),
+        eq(scraperAlertEvents.hostname, hostname),
+        ne(scraperAlertEvents.state, "resolved"),
+      ));
       continue;
+    }
     const bucket = Math.floor(Date.now() / (rule.cooldownMinutes * 60_000));
     const dedupeKey = `${rule.id}:${hostname}:${bucket}`;
     const message = `${hostname} scraper health fell to ${(successRateBps / 100).toFixed(1)}% with ${state.consecutiveFailures} consecutive failures.`;
@@ -415,6 +434,84 @@ export async function evaluateScraperAlerts(hostname: string) {
         .where(eq(scraperAlertEvents.id, event.id));
     }
   }
+}
+
+async function createCustomerAlerts(input: {
+  ownerEmail: string;
+  product: {
+    id: string;
+    productName?: string;
+    ownPriceCents?: number | null;
+    alertOnPriceDrop?: boolean;
+    alertOnRestock?: boolean;
+  };
+  result: ProductSearchResult;
+  previous?: typeof priceSnapshots.$inferSelect;
+  detectedAt: string;
+}) {
+  const { ownerEmail, product, result, previous, detectedAt } = input;
+  if (result.priceCents == null || !result.currency) return;
+  const alerts: Array<{ type: string; message: string }> = [];
+  const label = product.productName || "A monitored product";
+  if (product.alertOnPriceDrop !== false && previous && result.priceCents < previous.priceCents) {
+    alerts.push({
+      type: "price_drop",
+      message: `${label} dropped from ${money(previous.priceCents, result.currency)} to ${money(result.priceCents, result.currency)}.`,
+    });
+  }
+  if (product.alertOnPriceDrop !== false && product.ownPriceCents != null && result.priceCents < product.ownPriceCents
+    && (!previous || previous.priceCents >= product.ownPriceCents)) {
+    alerts.push({
+      type: "below_own_price",
+      message: `${label} is now ${money(result.priceCents, result.currency)}, below your price of ${money(product.ownPriceCents, result.currency)}.`,
+    });
+  }
+  if (product.alertOnRestock !== false && previous?.inStock === false && result.inStock === true) {
+    alerts.push({ type: "restock", message: `${label} is back in stock at ${money(result.priceCents, result.currency)}.` });
+  }
+  for (const alert of alerts) {
+    const [event] = await getDb().insert(customerAlertEvents).values({
+      id: crypto.randomUUID(),
+      ownerEmail,
+      productId: product.id,
+      alertType: alert.type,
+      state: "open",
+      dedupeKey: `${product.id}:${alert.type}:${detectedAt}`,
+      message: alert.message,
+      previousValueJson: previous ? JSON.stringify({ priceCents: previous.priceCents, currency: previous.currency, inStock: previous.inStock }) : null,
+      currentValueJson: JSON.stringify({ priceCents: result.priceCents, currency: result.currency, inStock: result.inStock ?? null }),
+      detectedAt,
+    }).onConflictDoNothing({ target: customerAlertEvents.dedupeKey }).returning();
+    if (!event) continue;
+    const endpoint = process.env.ALERT_EMAIL_WEBHOOK_URL;
+    if (!endpoint) {
+      await getDb().update(customerAlertEvents).set({ state: "delivery_failed", deliveryError: "Email endpoint is not configured." })
+        .where(eq(customerAlertEvents.id, event.id));
+      continue;
+    }
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: ownerEmail, subject: `PriceWatch: ${alert.type.replaceAll("_", " ")}`, text: alert.message }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      await getDb().update(customerAlertEvents).set(response.ok
+        ? { state: "sent", sentAt: new Date().toISOString() }
+        : { state: "delivery_failed", deliveryError: `HTTP ${response.status}` })
+        .where(eq(customerAlertEvents.id, event.id));
+    } catch (error) {
+      await getDb().update(customerAlertEvents).set({
+        state: "delivery_failed",
+        deliveryError: error instanceof Error ? error.message.slice(0, 300) : "Delivery failed",
+      }).where(eq(customerAlertEvents.id, event.id));
+    }
+  }
+}
+
+function money(cents: number, currency: string) {
+  try { return new Intl.NumberFormat("en", { style: "currency", currency }).format(cents / 100); }
+  catch { return `${(cents / 100).toFixed(2)} ${currency}`; }
 }
 
 function parseCachedMatch(value: string): CachedProductMatch | undefined {

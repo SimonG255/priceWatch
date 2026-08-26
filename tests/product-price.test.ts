@@ -113,7 +113,6 @@ test("fixture: Trgovine Jager resolves its challenge profile and extracts struct
   const profile = resolveStoreExtractionProfile(root, fixture("trgovine-jager-product.html"));
 
   assert.equal(profile?.id, "trgovine-jager");
-  assert.equal(profile?.blockPatterns?.includes("/cdn-cgi/challenge-platform"), true);
   assert.equal(profile?.blockPatterns?.includes("potrebno je varnostno preverjanje"), true);
 
   const result = extractProductMatch(

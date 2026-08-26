@@ -4,20 +4,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import writeXlsxFile from "write-excel-file";
 import { createClient as createSupabaseClient } from "../../lib/supabase/client";
+import { formatAppDateTime } from "../../lib/time-zone";
+import type { UserPlan } from "../../lib/plans";
 import PricingIntelligence from "./PricingIntelligence";
 
 type IconName = "grid" | "box" | "settings" | "plus" | "search" | "bolt" | "external" | "menu" | "close" | "upload" | "download" | "refresh" | "trash" | "file";
 type Product = {
   id: string; websiteUrl: string; productName: string; ean: string; sku: string; notes: string;
+  ownPriceCents: number | null; alertOnPriceDrop: boolean; alertOnRestock: boolean;
   status: "queued" | "searching" | "found" | "not_found" | "blocked" | "unavailable" | "needs_review" | "error";
   statusMessage: string; matchedUrl: string | null; resultTitle: string | null; priceCents: number | null;
   currency: string | null; inStock: boolean | null; matchType: string | null; confidence: string | null; evidenceJson: string | null; lastCheckedAt: string | null; createdAt: string;
   reasonCode?: string | null; failureClass?: string | null; challengeType?: string | null; confidenceScoresJson?: string | null; lastDurationMs?: number | null;
 };
 type Website = { id: string; url: string; createdAt: string };
-type ProductDraft = { id: string; productName: string; ean: string; sku: string };
+type ProductDraft = { id: string; productName: string; ean: string; sku: string; ownPrice: string };
 
-const emptyDraft = (id = "product-1"): ProductDraft => ({ id, productName: "", ean: "", sku: "" });
+const emptyDraft = (id = "product-1"): ProductDraft => ({ id, productName: "", ean: "", sku: "", ownPrice: "" });
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -41,7 +44,7 @@ async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
   return body;
 }
 
-export default function Dashboard({ displayName, email, customPlan, authProvider, isAdmin }: { displayName: string; email: string; customPlan: { urls: number; checks: number } | null; authProvider: "supabase" | "chatgpt"; isAdmin: boolean }) {
+export default function Dashboard({ displayName, email, plan, authProvider, isAdmin }: { displayName: string; email: string; plan: UserPlan; authProvider: "supabase" | "chatgpt"; isAdmin: boolean }) {
   const [products, setProducts] = useState<Product[]>([]);
   const [websites, setWebsites] = useState<Website[]>([]);
   const [loading, setLoading] = useState(true);
@@ -57,7 +60,7 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
   const [error, setError] = useState("");
   const [importProgress, setImportProgress] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
-  const planLimit = customPlan?.urls ?? 150;
+  const planLimit = plan.urlLimit;
   const firstName = displayName.split(/\s|@/)[0] || "there";
   const initials = displayName.split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase() || "PW";
 
@@ -148,7 +151,7 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       const newPairs = countNewPairs(activeDrafts);
       if (newPairs > planLimit - products.length) throw new Error(`This adds ${newPairs} monitored searches, but your plan has room for ${Math.max(0, planLimit - products.length).toLocaleString()}.`);
       setBulkProgress(`Saving ${combinationCount} product-website combinations…`);
-      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: activeDrafts.map(({ productName, ean, sku }) => ({ productName, ean, sku })), websiteIds: selectedWebsiteIds }) });
+      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: activeDrafts.map(({ productName, ean, sku, ownPrice }) => ({ productName, ean, sku, ownPriceCents: ownPrice ? Math.round(Number(ownPrice) * 100) : null })), websiteIds: selectedWebsiteIds }) });
       mergeProducts(result.products);
       await scanMany(result.products, setBulkProgress);
       setProductDrafts([emptyDraft()]);
@@ -168,6 +171,26 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
     finally { setSaving(false); }
   }
 
+  async function removeWebsite(website: Website) {
+    if (!window.confirm(`Remove ${new URL(website.url).hostname} from saved websites?`)) return;
+    try {
+      await jsonRequest(`/api/websites/${website.id}`, { method: "DELETE" });
+      setWebsites((current) => current.filter((item) => item.id !== website.id));
+      setSelectedWebsiteIds((current) => current.filter((id) => id !== website.id));
+      showToast("Website removed");
+    } catch (err) { setError(err instanceof Error ? err.message : "Website could not be removed."); }
+  }
+
+  async function deleteWorkspace() {
+    const confirmation = window.prompt("This permanently deletes every PriceWatch product, snapshot, alert, and schedule in your workspace. Type DELETE to continue.");
+    if (confirmation !== "DELETE") return;
+    try {
+      await jsonRequest("/api/account", { method: "DELETE", body: JSON.stringify({ confirm: confirmation }) });
+      if (authProvider === "supabase") await createSupabaseClient().auth.signOut();
+      window.location.assign("/login");
+    } catch (err) { setError(err instanceof Error ? err.message : "Workspace data could not be deleted."); }
+  }
+
   async function importWorkbook(file: File) {
     setError(""); setImportProgress("Reading workbook…");
     try {
@@ -180,11 +203,13 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       const column = (names: string[]) => headers.findIndex(header => names.includes(header));
       const nameIndex = column(["product name", "name"]); const eanIndex = column(["ean", "gtin", "barcode"]);
       const skuIndex = column(["sku (optional)", "sku"]); const notesIndex = column(["notes (optional)", "notes"]);
+      const ownPriceIndex = column(["your price (optional)", "your price", "own price"]);
       if ([nameIndex, eanIndex].some(index => index < 0)) throw new Error("The workbook needs Product Name and EAN columns.");
       if (!selectedWebsiteIds.length) throw new Error("Select at least one website before importing products.");
       const imported = rows.slice(headerRow + 1).map(row => ({
         productName: String(row[nameIndex] ?? "").trim(), ean: String(row[eanIndex] ?? "").trim(),
         sku: skuIndex >= 0 ? String(row[skuIndex] ?? "").trim() : "", notes: notesIndex >= 0 ? String(row[notesIndex] ?? "").trim() : "",
+        ownPriceCents: ownPriceIndex >= 0 && row[ownPriceIndex] !== "" && row[ownPriceIndex] != null ? Math.round(Number(row[ownPriceIndex]) * 100) : null,
       })).filter(row => row.productName && row.ean && !/example product/i.test(row.productName));
       if (!imported.length) throw new Error("No product rows were found. Delete the example row and add your products first.");
       const remaining = planLimit - products.length;
@@ -201,15 +226,16 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
 
   async function exportWorkbook() {
     if (!products.length) { showToast("Add a product before exporting"); return; }
-    const header = ["Website URL", "Product Name", "EAN", "SKU", "Notes", "Status", "Confidence", "Matched URL", "Result title", "Price", "Currency", "In stock", "Last checked"];
+    const header = ["Website URL", "Product Name", "EAN", "SKU", "Notes", "Your price", "Status", "Confidence", "Matched URL", "Result title", "Competitor price", "Currency", "In stock", "Last checked"];
     const data = [
       header.map(value => ({ value, type: String, fontWeight: "bold" as const, color: "#FFFFFF", backgroundColor: "#123F37" })),
       ...products.map(product => [
-        product.websiteUrl, product.productName, product.ean, product.sku, product.notes, product.status, product.confidence ?? "", product.matchedUrl ?? "", product.resultTitle ?? "",
+        product.websiteUrl, product.productName, product.ean, product.sku, product.notes, product.ownPriceCents == null ? "" : product.ownPriceCents / 100,
+        product.status, product.confidence ?? "", product.matchedUrl ?? "", product.resultTitle ?? "",
         product.priceCents == null ? "" : product.priceCents / 100, product.currency ?? "", product.inStock == null ? "" : product.inStock ? "Yes" : "No", product.lastCheckedAt ?? "",
-      ].map((value, index) => ({ value, type: index === 9 && typeof value === "number" ? Number : String }))),
+      ].map((value, index) => ({ value, type: (index === 5 || index === 10) && typeof value === "number" ? Number : String }))),
     ];
-    await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 14, 12, 36, 30, 12, 10, 10, 22].map(width => ({ width })) });
+    await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 12, 14, 12, 36, 30, 14, 10, 10, 22].map(width => ({ width })) });
     showToast("Excel export downloaded");
   }
 
@@ -229,18 +255,18 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
       <div className="brand"><span className="logo"><Icon name="bolt" size={17}/></span><span>PriceWatch</span></div>
       <button className="mobile-close" onClick={() => setMenu(false)} aria-label="Close navigation"><Icon name="close"/></button>
       <nav><button className="nav-item active" onClick={() => {setMenu(false);document.getElementById("search-product")?.scrollIntoView({behavior:"smooth"})}}><Icon name="search"/><span>Product search</span></button><button className="nav-item" onClick={() => {setMenu(false);document.getElementById("product-list")?.scrollIntoView({behavior:"smooth"})}}><Icon name="box"/><span>Products</span><span className="nav-count">{products.length}</span></button>{isAdmin && <button className="nav-item" onClick={() => window.location.assign("/admin")}><Icon name="settings"/><span>Admin profiles</span></button>}</nav>
-      <div className="side-bottom"><div className="plan-card"><div><span>{customPlan ? "Custom plan" : "Business plan"}</span><strong>{products.length} of {planLimit.toLocaleString()}</strong></div><div className="meter"><i style={{width:`${Math.min(100, products.length / planLimit * 100)}%`}}/></div><button onClick={() => window.location.assign("/#pricing")}>Manage plan</button></div><div className="profile"><span className="avatar">{initials}</span><span className="profile-copy"><strong>{displayName}</strong><small>{email}</small></span><button className="signout-mini" onClick={signOut}>Sign out</button></div></div>
+      <div className="side-bottom"><div className="plan-card"><div><span>{plan.key[0].toUpperCase() + plan.key.slice(1)} plan</span><strong>{products.length} of {planLimit.toLocaleString()}</strong></div><div className="meter"><i style={{width:`${Math.min(100, products.length / planLimit * 100)}%`}}/></div><button onClick={() => window.location.assign("/#pricing")}>Manage plan</button></div><div className="profile"><span className="avatar">{initials}</span><span className="profile-copy"><strong>{displayName}</strong><small>{email}</small></span><button className="signout-mini" onClick={signOut}>Sign out</button></div><button className="delete-workspace" onClick={deleteWorkspace}>Delete workspace data</button></div>
     </aside>
     {menu && <button className="scrim" onClick={() => setMenu(false)} aria-label="Close menu"/>}
 
     <section className="content search-content">
-      <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{customPlan ? `${customPlan.urls.toLocaleString()} URLs · ${customPlan.checks} checks/day` : "Public product monitoring"}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={exportWorkbook}><Icon name="download"/>Export Excel</button></div></header>
+      <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{plan.urlLimit.toLocaleString()} monitored searches · {plan.checksPerDay === 1 ? "daily checks" : `${plan.checksPerDay} checks/day`}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={exportWorkbook}><Icon name="download"/>Export Excel</button></div></header>
 
       <section className="product-search-card website-card">
         <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Add websites, then select where to search</h2><p>Save each public store once. Select one or many websites for manual searches and Excel imports.</p></div></div>
         <form className="website-form" onSubmit={addWebsite}><label><span>Website URL</span><input required type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/></label><button className="secondary-action" disabled={saving} type="submit"><Icon name="plus"/>Add website</button></form>
         <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
-        <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; }) : <small>No websites added yet.</small>}</div>
+        <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <span className="website-pill" key={website.id}><button type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button><button type="button" className="website-remove" onClick={() => removeWebsite(website)} aria-label={`Remove ${new URL(website.url).hostname}`}><Icon name="trash" size={12}/></button></span>; }) : <small>No websites added yet.</small>}</div>
       </section>
 
       <section className="product-search-card" id="search-product">
@@ -250,8 +276,9 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
           <div className="draft-list">{productDrafts.map((draft, index) => <div className="draft-row" key={draft.id}>
             <span className="draft-number">{index + 1}</span>
             <label><span>Product name</span><input required value={draft.productName} onChange={event => updateDraft(draft.id, "productName", event.target.value)} placeholder="Logitech MX Master 4"/></label>
-            <label><span>EAN / GTIN</span><input required inputMode="numeric" value={draft.ean} onChange={event => updateDraft(draft.id, "ean", event.target.value)} placeholder="5099206123456"/></label>
+            <label><span>EAN / GTIN</span><input required inputMode="numeric" value={draft.ean} onChange={event => updateDraft(draft.id, "ean", event.target.value)} placeholder="8806095539737"/></label>
             <label><span>SKU <small>optional</small></span><input value={draft.sku} onChange={event => updateDraft(draft.id, "sku", event.target.value)} placeholder="MXM4-GRAPHITE"/></label>
+            <label><span>Your price <small>optional</small></span><input type="number" min="0" step="0.01" value={draft.ownPrice} onChange={event => updateDraft(draft.id, "ownPrice", event.target.value)} placeholder="119.99"/></label>
             <button className="remove-draft" type="button" disabled={productDrafts.length === 1} onClick={() => removeDraft(draft.id)} aria-label={`Remove product row ${index + 1}`}><Icon name="trash" size={15}/></button>
           </div>)}</div>
           <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{uniqueDraftCount} product{uniqueDraftCount === 1 ? "" : "s"} × {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"} = {combinationCount} searches</strong><small>Existing combinations are updated without creating duplicates.</small></div><button className="primary search-submit" disabled={saving || !selectedWebsites.length} type="submit"><Icon name="search"/>{bulkProgress || "Add & search combinations"}</button></div>
@@ -271,7 +298,7 @@ export default function Dashboard({ displayName, email, customPlan, authProvider
 
       <section className="product-list-card" id="product-list">
         <div className="product-list-head"><div><h2>Monitored products</h2><p>Every product is tied to one website and EAN.</p></div><div className="list-actions"><label className="search"><Icon name="search" size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, EAN or site"/></label><button onClick={() => setImportOpen(true)}><Icon name="upload"/>Bulk import</button></div></div>
-        {loading ? <div className="empty-products"><span className="spinner"/><h3>Loading your products…</h3></div> : filtered.length === 0 ? <div className="empty-products"><span><Icon name="box" size={25}/></span><h3>{products.length ? "No products match this search" : "No products yet"}</h3><p>{products.length ? "Try another name, EAN, or website." : "Add one above, or import many products from Excel."}</p>{!products.length && <button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button>}</div> : <div className="monitor-table-wrap"><table className="monitor-table"><thead><tr><th>Product</th><th>Website</th><th>EAN</th><th>Result</th><th>Price</th><th>Stock</th><th>Last checked</th><th/></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><strong>{product.productName}</strong><small>{product.sku || "No SKU"}</small></td><td><a href={product.websiteUrl} target="_blank" rel="noreferrer">{new URL(product.websiteUrl).hostname}<Icon name="external" size={12}/></a></td><td><code>{product.ean}</code></td><td><span className={`result-badge ${product.status}`}>{product.status === "not_found" ? "Not found" : product.status}</span><small title={product.statusMessage}>{product.statusMessage}</small></td><td><strong>{product.priceCents == null ? "—" : new Intl.NumberFormat(undefined,{style:"currency",currency:product.currency || "EUR"}).format(product.priceCents/100)}</strong>{product.matchedUrl && <a className="match-link" href={product.matchedUrl} target="_blank" rel="noreferrer">{product.status === "found" ? "Open match" : "Open candidate"}</a>}</td><td>{product.inStock == null ? "—" : <span className={product.inStock ? "stock in" : "stock out"}>{product.inStock ? "In stock" : "Out"}</span>}</td><td>{product.lastCheckedAt ? new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(new Date(product.lastCheckedAt)) : "Never"}</td><td><div className="row-buttons"><button onClick={() => scanOne(product.id)} disabled={product.status === "searching"} title="Search again"><Icon name="refresh" size={15}/></button><button onClick={() => removeProduct(product)} title="Remove"><Icon name="trash" size={15}/></button></div></td></tr>)}</tbody></table></div>}
+        {loading ? <div className="empty-products"><span className="spinner"/><h3>Loading your products…</h3></div> : filtered.length === 0 ? <div className="empty-products"><span><Icon name="box" size={25}/></span><h3>{products.length ? "No products match this search" : "No products yet"}</h3><p>{products.length ? "Try another name, EAN, or website." : "Add one above, or import many products from Excel."}</p>{!products.length && <button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button>}</div> : <div className="monitor-table-wrap"><table className="monitor-table"><thead><tr><th>Product</th><th>Website</th><th>EAN</th><th>Result</th><th>Prices</th><th>Stock</th><th>Last checked</th><th/></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><strong>{product.productName}</strong><small>{product.sku || "No SKU"}</small></td><td><a href={product.websiteUrl} target="_blank" rel="noreferrer">{new URL(product.websiteUrl).hostname}<Icon name="external" size={12}/></a></td><td><code>{product.ean}</code></td><td><span className={`result-badge ${product.status}`}>{product.status === "not_found" ? "Not found" : product.status}</span><small title={displayStatusMessage(product.statusMessage)}>{displayStatusMessage(product.statusMessage)}</small></td><td><strong>{product.priceCents == null ? "—" : new Intl.NumberFormat(undefined,{style:"currency",currency:product.currency || "EUR"}).format(product.priceCents/100)}</strong>{product.ownPriceCents != null && <small>Your price: {new Intl.NumberFormat(undefined,{style:"currency",currency:product.currency || "EUR"}).format(product.ownPriceCents/100)}</small>}{product.matchedUrl && <a className="match-link" href={product.matchedUrl} target="_blank" rel="noreferrer">{product.status === "found" ? "Open match" : "Open last match"}</a>}</td><td>{product.inStock == null ? "—" : <span className={product.inStock ? "stock in" : "stock out"}>{product.inStock ? "In stock" : "Out"}</span>}</td><td>{product.lastCheckedAt ? formatAppDateTime(product.lastCheckedAt) : "Never"}</td><td><div className="row-buttons"><button onClick={() => scanOne(product.id)} disabled={product.status === "searching"} title="Search again"><Icon name="refresh" size={15}/></button><button onClick={() => removeProduct(product)} title="Remove"><Icon name="trash" size={15}/></button></div></td></tr>)}</tbody></table></div>}
       </section>
       <footer><span><i/>Verified public-page monitoring</span><span>AI reviews results and recovers failed store searches</span></footer>
     </section>
@@ -299,4 +326,8 @@ function fairProductOrder(items: Product[]) {
     }
   }
   return ordered;
+}
+
+function displayStatusMessage(message: string) {
+  return /challenge detected\./i.test(message) ? "Website presented an access challenge." : message;
 }

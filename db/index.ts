@@ -1,66 +1,99 @@
-import { env } from "cloudflare:workers";
 import { sql } from "drizzle-orm";
-import { drizzle as drizzleD1 } from "drizzle-orm/d1";
-import { drizzle as drizzlePg } from "drizzle-orm/postgres-js";
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import * as schema from "./schema";
 
 const globalWithDb = globalThis as typeof globalThis & {
   __pricewatch_pg?: ReturnType<typeof postgres>;
-  __pricewatch_db?: ReturnType<typeof drizzlePg<typeof schema>>;
+  __pricewatch_db?: ReturnType<typeof drizzle<typeof schema>>;
+  __pricewatch_db_url?: string;
 };
 
-export function getDb(): any {
-  const databaseUrl = process.env.DATABASE_URL?.trim() || process.env.DIRECT_URL?.trim();
-  if (databaseUrl) {
-    if (!globalWithDb.__pricewatch_pg) {
-      globalWithDb.__pricewatch_pg = postgres(databaseUrl, { prepare: false, max: 10 });
-    }
-    if (!globalWithDb.__pricewatch_db) {
-      globalWithDb.__pricewatch_db = drizzlePg(globalWithDb.__pricewatch_pg, { schema });
-    }
-    return globalWithDb.__pricewatch_db as any;
-  }
+function normalizeDatabaseUrl(rawUrl: string) {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return "";
 
-  if (!env.DB) {
+  try {
+    new URL(trimmed);
+    return trimmed;
+  } catch {
+    // Some Supabase passwords include reserved URL characters such as [ ] ? = .
+    // Postgres accepts those only when they are percent-encoded.
+    const match = trimmed.match(/^((?:postgres|postgresql):\/\/)([^:@/]+):([^@]+)@(.+)$/i);
+    if (!match) return trimmed;
+
+    const [, scheme, username, password, rest] = match;
+    return `${scheme}${username}:${encodeURIComponent(password)}@${rest}`;
+  }
+}
+
+export function getDatabaseUrl() {
+  const connectionString = normalizeDatabaseUrl(
+    process.env.DATABASE_URL?.trim() ?? process.env.SUPABASE_DB_URL?.trim() ?? process.env.DIRECT_URL?.trim() ?? "",
+  );
+
+  if (!connectionString || !/^postgres(?:ql)?:\/\//i.test(connectionString)) {
     throw new Error(
-      "Cloudflare D1 binding `DB` is unavailable. Set the `d1` field in .openai/hosting.json to `DB` or let your control plane inject the real binding values before using the database.",
+      "Supabase database connection string is not configured. Set DIRECT_URL, SUPABASE_DB_URL, or DATABASE_URL.",
     );
   }
 
-  return drizzleD1(env.DB, { schema }) as any;
+  return connectionString;
+}
+
+export function getDb() {
+  const connectionString = getDatabaseUrl();
+  const usesTransactionPooler = /:6543(?:\/|$)/.test(connectionString);
+
+  if (!globalWithDb.__pricewatch_pg || globalWithDb.__pricewatch_db_url !== connectionString) {
+    globalWithDb.__pricewatch_pg = postgres(connectionString, {
+      max: 1,
+      prepare: !usesTransactionPooler,
+      ssl: "require",
+    });
+    globalWithDb.__pricewatch_db = drizzle(globalWithDb.__pricewatch_pg, { schema });
+    globalWithDb.__pricewatch_db_url = connectionString;
+  }
+
+  return globalWithDb.__pricewatch_db!;
 }
 
 let productsSchemaReady: Promise<void> | null = null;
 
-/**
- * Schema evolution is handled by the versioned Drizzle migrations packaged
- * with every Sites deployment. Request handlers perform one cheap readiness
- * check per isolate instead of issuing dozens of runtime DDL statements.
- */
 export async function ensureProductsSchema() {
-  const databaseUrl = process.env.DATABASE_URL?.trim() || process.env.DIRECT_URL?.trim();
-  if (databaseUrl) {
-    if (!productsSchemaReady) {
-      productsSchemaReady = getDb()
-        .execute(sql`SELECT 1 FROM monitored_products LIMIT 1`)
-        .then(() => undefined)
-        .catch((error: unknown) => {
-          productsSchemaReady = null;
-          throw new Error("PriceWatch database migrations are not ready.", { cause: error });
-        });
-    }
-    return productsSchemaReady;
-  }
-
-  if (!env.DB) throw new Error("Cloudflare D1 binding `DB` is unavailable.");
   if (!productsSchemaReady) {
-    productsSchemaReady = env.DB.prepare("SELECT 1 FROM monitored_products LIMIT 1")
-      .first()
+    productsSchemaReady = getDb()
+      .execute(sql`SELECT 1 FROM monitored_products LIMIT 1`)
       .then(() => undefined)
       .catch((error: unknown) => {
         productsSchemaReady = null;
-        throw new Error("PriceWatch database migrations are not ready.", { cause: error });
+
+        const messages: string[] = [];
+        let currentError: unknown = error;
+        while (currentError) {
+          if (currentError instanceof Error) {
+            messages.push(currentError.message);
+            currentError = currentError.cause;
+          } else if (typeof currentError === "object") {
+            const candidate = currentError as { code?: unknown; message?: unknown; cause?: unknown };
+            if (candidate.code) messages.push(String(candidate.code));
+            if (candidate.message) messages.push(String(candidate.message));
+            currentError = candidate.cause;
+          } else {
+            messages.push(String(currentError));
+            break;
+          }
+        }
+        const isAuthFailure = messages.some(
+          (message) => message.includes("password authentication failed") || message.includes("28P01"),
+        );
+
+        throw new Error(
+          isAuthFailure
+            ? "PriceWatch database credentials are invalid or stale. Update DIRECT_URL/SUPABASE_DB_URL/DATABASE_URL with the current Supabase connection string from the project dashboard."
+            : "PriceWatch database migrations are not ready.",
+          { cause: error },
+        );
       });
   }
   return productsSchemaReady;

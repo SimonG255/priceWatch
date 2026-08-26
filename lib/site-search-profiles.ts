@@ -58,7 +58,7 @@ export const WEBSITE_SEARCH_PROFILES: readonly SearchProfile[] = [
     suppressesGenericFallback: true,
     extraction: {
       id: "trgovine-jager",
-      blockPatterns: ["cf-chl-", "/cdn-cgi/challenge-platform", "potrebno je varnostno preverjanje"],
+      blockPatterns: ["potrebno je varnostno preverjanje"],
     },
   },
   {

@@ -11,7 +11,14 @@ export async function POST(request: Request) {
   try {
     await ensureProductsSchema();
     const body = await request.json() as Record<string, unknown>;
-    const url = new URL(String(body.url || ""));
+    const rawUrl = String(body.url || "").trim();
+    if (!rawUrl) throw new Error("Enter the public URL to use for the profile test.");
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      throw new Error("Enter a valid public URL starting with https:// or http://.");
+    }
     if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Enter a public HTTP or HTTPS URL.");
     assertPublicHostname(url.hostname);
     const productName = String(body.productName || "").trim();

@@ -12,11 +12,17 @@ import {
   scraperBudgetFor,
   suggestSelectors,
 } from "../lib/scraper-diagnostics.ts";
+import { sitemapCacheKey } from "../lib/cache-keys.ts";
+
+test("builds PostgreSQL-safe sitemap cache keys", () => {
+  const key = sitemapCacheKey("bigbang.si", "8606018852574");
+  assert.equal(key, '["bigbang.si","8606018852574"]');
+  assert.equal(key.includes("\u0000"), false);
+});
 
 test("classifies challenge walls without blocking ordinary CAPTCHA widgets", () => {
   assert.equal(detectAccessChallenge('<html><script src="https://www.google.com/recaptcha/api.js"></script><h1>Product</h1><p>In stock</p></html>'), undefined);
   assert.equal(detectAccessChallenge("<title>Verify</title><div class='g-recaptcha'></div><p>Complete the captcha to continue</p>")?.challengeType, "captcha");
-  assert.equal(detectAccessChallenge("", [], { status: 403, server: "cloudflare", cfRay: "abc" })?.challengeType, "cloudflare");
   const login = detectAccessChallenge("<title>Sign in</title><p>Sign in to continue</p>");
   assert.equal(login?.challengeType, "login_wall");
   assert.equal(login?.failureClass, "permanent");

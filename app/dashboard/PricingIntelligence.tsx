@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { APP_TIME_ZONE, formatAppDateTime } from "../../lib/time-zone";
 
 export type IntelligenceProduct = {
   id: string;
@@ -26,9 +27,12 @@ type Schedule = {
   id: string; name: string; targetMode: "all" | "selected"; cadenceMinutes: number; enabled: boolean; nextRunAt: string;
   lastRunAt: string | null; lastOutcome: string | null;
 };
+type CustomerAlert = {
+  id: string; alertType: string; state: string; message: string; detectedAt: string;
+};
 
 const REASON_LABELS: Record<string, string> = {
-  cloudflare: "Cloudflare challenge", captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required",
+  captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required",
   js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence",
   price_missing: "Price missing", response_too_large: "Page too large", robots_disallowed: "Blocked by policy",
   known_bad_pattern: "Known bad page", profile_drift: "Profile drift", rate_limited: "Rate limited", timeout: "Timed out",
@@ -44,6 +48,7 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
   const [scheduleLoading, setScheduleLoading] = useState(false);
   const [cadenceMinutes, setCadenceMinutes] = useState(360);
   const [notice, setNotice] = useState("");
+  const [alerts, setAlerts] = useState<CustomerAlert[]>([]);
 
   const priced = useMemo(() => products.filter((product) => product.status === "found" && product.priceCents != null), [products]);
   const comparisonGroups = useMemo(() => {
@@ -67,6 +72,13 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
   }, []);
 
   useEffect(() => {
+    fetch("/api/alerts", { headers: { Accept: "application/json" } })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("Alerts are unavailable.")))
+      .then((data: { alerts: CustomerAlert[] }) => setAlerts(data.alerts))
+      .catch(() => setAlerts([]));
+  }, [products]);
+
+  useEffect(() => {
     if (view !== "history" || !selectedHistoryProductId) return;
     const controller = new AbortController();
     fetch(`/api/products/${selectedHistoryProductId}/history?limit=80`, { headers: { Accept: "application/json" }, signal: controller.signal })
@@ -84,7 +96,7 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
   async function createSchedule() {
     setScheduleLoading(true); setNotice("");
     try {
-      const response = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "All product monitoring", targetMode: "all", cadenceMinutes, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, enabled: true }) });
+      const response = await fetch("/api/schedules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "All product monitoring", targetMode: "all", cadenceMinutes, timeZone: APP_TIME_ZONE, enabled: true }) });
       const body = await response.json() as { schedule?: Schedule; complete?: boolean; error?: string };
       if (!response.ok || !body.schedule) throw new Error(body.error || "Schedule could not be saved.");
       setSchedules((current) => [body.schedule!, ...current]); setNotice("Scheduled monitoring is active.");
@@ -126,6 +138,10 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
     <div className="intelligence-tabs" role="group" aria-label="Pricing intelligence views">
       {(["compare", "history", "automation"] as const).map((tab) => <button key={tab} aria-pressed={view === tab} className={view === tab ? "active" : ""} onClick={() => { if (tab === "history" && view !== "history" && selectedHistoryProductId) setHistoryLoading(true); setView(tab); }}>{tab === "compare" ? "Compare stores" : tab === "history" ? "Price history" : "Scheduled runs"}</button>)}
     </div>
+    {alerts.length > 0 && <div className="customer-alert-list" aria-label="Recent price and stock alerts">
+      <strong>Recent alerts</strong>
+      {alerts.slice(0, 5).map((alert) => <article key={alert.id}><span className={`result-badge ${alert.state}`}>{alert.alertType.replaceAll("_", " ")}</span><p>{alert.message}</p><time>{formatAppDateTime(alert.detectedAt)}</time></article>)}
+    </div>}
 
     {view === "compare" && <div className="compare-grid">
       {!comparisonGroups.length ? <div className="intelligence-empty"><strong>No multi-store comparison yet</strong><span>Add the same EAN on at least two websites to compare verified offers.</span></div> : comparisonGroups.map((group) => <article className="comparison-group" key={group.ean}>
@@ -146,17 +162,17 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
       {!selectedHistoryProductId ? <div className="intelligence-empty"><strong>No tracked history yet</strong><span>Run a product check to create its first observation.</span></div> : historyLoading ? <div className="intelligence-empty">Loading price history…</div> : !snapshots.length ? <div className="intelligence-empty"><strong>No snapshots yet</strong><span>A snapshot is saved after the next verified price check.</span></div> : <>
         {snapshotGroups.map(([currency, currencySnapshots]) => <section className="history-currency" key={currency}><h3>{currency}</h3><div className="history-bars" role="img" aria-label={`${currency} price history with ${currencySnapshots.length} observations`}>{[...currencySnapshots].reverse().map((snapshot) => {
           const prices = currencySnapshots.map((item) => item.priceCents); const min = Math.min(...prices); const max = Math.max(...prices); const height = max === min ? 55 : 18 + (snapshot.priceCents - min) / (max - min) * 70;
-          return <i key={snapshot.id} style={{ height: `${height}%` }} title={`${formatMoney(snapshot.priceCents, snapshot.currency)} · ${new Date(snapshot.capturedAt).toLocaleString()}`}/>;
-        })}</div><div className="snapshot-list">{currencySnapshots.slice(0, 12).map((snapshot) => <div key={snapshot.id}><time>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(snapshot.capturedAt))}</time><strong>{formatMoney(snapshot.priceCents, snapshot.currency)}</strong><span>{snapshot.inStock === false ? "Out of stock" : snapshot.inStock == null ? "Stock unknown" : "In stock"} · EAN {snapshot.confidenceScores.ean}% · name {snapshot.confidenceScores.name}% · price {snapshot.confidenceScores.price}% · source {snapshot.confidenceScores.source}%</span></div>)}</div></section>)}
+          return <i key={snapshot.id} style={{ height: `${height}%` }} title={`${formatMoney(snapshot.priceCents, snapshot.currency)} · ${formatAppDateTime(snapshot.capturedAt)}`}/>;
+        })}</div><div className="snapshot-list">{currencySnapshots.slice(0, 12).map((snapshot) => <div key={snapshot.id}><time>{formatAppDateTime(snapshot.capturedAt)}</time><strong>{formatMoney(snapshot.priceCents, snapshot.currency)}</strong><span>{snapshot.inStock === false ? "Out of stock" : snapshot.inStock == null ? "Stock unknown" : "In stock"} · EAN {snapshot.confidenceScores.ean}% · name {snapshot.confidenceScores.name}% · price {snapshot.confidenceScores.price}% · source {snapshot.confidenceScores.source}%</span></div>)}</div></section>)}
       </>}
     </div>}
 
     {view === "automation" && <div className="automation-panel">
       <div className="schedule-create"><div><strong>Fair scheduled monitoring</strong><span>Runs are interleaved across domains and processed in leased batches, so one slow store cannot starve the rest.</span></div><label><span>Frequency</span><select value={cadenceMinutes} onChange={(event) => setCadenceMinutes(Number(event.target.value))}><option value={60}>Every hour</option><option value={360}>Every 6 hours</option><option value={720}>Twice daily</option><option value={1440}>Daily</option><option value={10080}>Weekly</option></select></label><button onClick={createSchedule} disabled={scheduleLoading || !products.length || schedules.some((schedule) => schedule.targetMode === "all")}>{schedules.some((schedule) => schedule.targetMode === "all") ? "Schedule exists" : "Create schedule"}</button></div>
-      <div className="schedule-list">{schedules.map((schedule) => <article key={schedule.id}><div><strong>{schedule.name}</strong><span>{schedule.lastOutcome || "Not run yet"}</span><small>Next {new Date(schedule.nextRunAt).toLocaleString()}</small></div><button className={schedule.enabled ? "enabled" : ""} aria-label={`${schedule.enabled ? "Pause" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => toggleSchedule(schedule)}>{schedule.enabled ? "Enabled" : "Paused"}</button><button aria-label={`Run ${schedule.name} now`} onClick={() => runSchedule(schedule)} disabled={scheduleLoading}>Run now</button></article>)}</div>
+      <div className="schedule-list">{schedules.map((schedule) => <article key={schedule.id}><div><strong>{schedule.name}</strong><span>{schedule.lastOutcome || "Not run yet"}</span><small>Next {formatAppDateTime(schedule.nextRunAt)}</small></div><button className={schedule.enabled ? "enabled" : ""} aria-label={`${schedule.enabled ? "Pause" : "Enable"} ${schedule.name}`} aria-pressed={schedule.enabled} onClick={() => toggleSchedule(schedule)}>{schedule.enabled ? "Enabled" : "Paused"}</button><button aria-label={`Run ${schedule.name} now`} onClick={() => runSchedule(schedule)} disabled={scheduleLoading}>Run now</button></article>)}</div>
     </div>}
     {notice && <p className="intelligence-notice" aria-live="polite">{notice}</p>}
-    {products.some((product) => product.reasonCode && product.reasonCode !== "found") && <div className="reason-summary">Latest review reasons: {[...new Set(products.map((product) => product.reasonCode).filter((reason): reason is string => Boolean(reason) && reason !== "found"))].slice(0, 6).map((reason) => <span key={reason}>{REASON_LABELS[reason] || reason.replaceAll("_", " ")}</span>)}</div>}
+    {products.some((product) => product.reasonCode && product.reasonCode !== "found") && <div className="reason-summary">Latest review reasons: {[...new Set(products.map((product) => product.reasonCode).filter((reason): reason is string => Boolean(reason) && reason !== "found"))].slice(0, 6).map((reason) => <span key={reason}>{reasonLabel(reason)}</span>)}</div>}
   </section>;
 }
 
@@ -174,4 +190,8 @@ function confidenceLabel(value: string | null | undefined) {
     if (!scores || !["ean", "name", "price", "source"].every((key) => typeof scores[key] === "number")) return "";
     return `EAN ${scores.ean}% · name ${scores.name}% · price ${scores.price}% · source ${scores.source}%`;
   } catch { return ""; }
+}
+
+function reasonLabel(value: string) {
+  return REASON_LABELS[value] || (value.includes("_") ? value.replaceAll("_", " ") : "Access challenge");
 }

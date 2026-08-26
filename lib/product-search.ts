@@ -931,7 +931,14 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), options.timeoutMs);
       try {
-        const reservation = await options.reserveRequest?.();
+        let reservation = await options.reserveRequest?.();
+        if (reservation && !reservation.allowed && reservation.retryAt) {
+          const waitMs = Date.parse(reservation.retryAt) - Date.now();
+          if (waitMs > 0 && waitMs <= 2_000) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs + 25));
+            reservation = await options.reserveRequest?.();
+          }
+        }
         if (reservation && !reservation.allowed) {
           throw new PublicPageFetchError("rate_limited", "The website is cooling down to respect its public request limits.", {
             retryAfterMs: reservation.retryAt ? Math.max(0, Date.parse(reservation.retryAt) - Date.now()) : undefined,
@@ -971,12 +978,7 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
         }
         const html = await readPublicText(response, maxBytes);
         const responseBytes = new TextEncoder().encode(html).byteLength;
-        const detectedChallenge = detectAccessChallenge(html, options.blockPatterns, {
-          status: response.status,
-          server: response.headers.get("server") || undefined,
-          cfMitigated: response.headers.get("cf-mitigated") || undefined,
-          cfRay: response.headers.get("cf-ray") || undefined,
-        });
+        const detectedChallenge = detectAccessChallenge(html, options.blockPatterns);
         if (detectedChallenge) {
           throw new PublicPageFetchError("challenge", detectedChallenge.message, {
             httpStatus: response.status, reasonCode: detectedChallenge.reasonCode,

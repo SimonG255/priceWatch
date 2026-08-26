@@ -20,6 +20,7 @@ export const renderWithPermittedService: PermittedPageRenderer = async ({ url, h
   try {
     rendererUrl = new URL(endpoint);
     if (rendererUrl.protocol !== "https:" || rendererUrl.username || rendererUrl.password) return undefined;
+    assertPublicHostname(rendererUrl.hostname);
     assertPublicHostname(hostname);
   } catch {
     return undefined;

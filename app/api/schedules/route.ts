@@ -2,6 +2,8 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../db";
 import { monitoredProducts, scraperSchedules } from "../../../db/schema";
 import { getCurrentUserEmail } from "../../../lib/current-user";
+import { getOrCreateUserPlan, minimumCadenceMinutes } from "../../../lib/plans";
+import { APP_TIME_ZONE } from "../../../lib/time-zone";
 
 export async function GET() {
   const ownerEmail = await getCurrentUserEmail();
@@ -19,6 +21,9 @@ export async function POST(request: Request) {
     const input = await request.json() as Record<string, unknown>;
     const cadenceMinutes = Math.round(Number(input.cadenceMinutes));
     if (!Number.isFinite(cadenceMinutes) || cadenceMinutes < 15 || cadenceMinutes > 43_200) throw new Error("Choose a cadence between 15 minutes and 30 days.");
+    const plan = await getOrCreateUserPlan(ownerEmail);
+    const minimumCadence = minimumCadenceMinutes(plan);
+    if (cadenceMinutes < minimumCadence) throw new Error(`Your ${plan.key} plan supports up to ${plan.checksPerDay} checks per day. Choose ${minimumCadence} minutes or longer.`);
     const targetMode = input.targetMode === "selected" ? "selected" : "all";
     const productIds = Array.isArray(input.productIds) ? [...new Set(input.productIds.filter((value): value is string => typeof value === "string"))].slice(0, 500) : [];
     if (targetMode === "selected") {
@@ -29,7 +34,7 @@ export async function POST(request: Request) {
       ));
       if (owned.length !== productIds.length) throw new Error("One or more selected products are unavailable.");
     }
-    const timeZone = validateTimeZone(typeof input.timeZone === "string" ? input.timeZone : "UTC");
+    const timeZone = validateTimeZone(typeof input.timeZone === "string" ? input.timeZone : APP_TIME_ZONE);
     if (targetMode === "all") {
       const [duplicate] = await getDb().select({ id: scraperSchedules.id }).from(scraperSchedules).where(and(
         eq(scraperSchedules.ownerEmail, ownerEmail),
@@ -69,5 +74,5 @@ function selectedProductIds(ids: string[]) {
 }
 
 function validateTimeZone(value: string) {
-  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return value; } catch { return "UTC"; }
+  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return value; } catch { return APP_TIME_ZONE; }
 }

@@ -3,7 +3,7 @@ import test from "node:test";
 import { prepareBulkProductSearches } from "../lib/bulk-product-input.ts";
 
 const products = [
-  { productName: "Product One", ean: "12345678", sku: "ONE" },
+  { productName: "Product One", ean: "12345670", sku: "ONE" },
   { productName: "Product Two", ean: "123456789012", sku: "TWO" },
 ];
 
@@ -22,10 +22,14 @@ test("builds every unique product and website combination", () => {
 });
 
 test("deduplicates repeated product rows and website IDs", () => {
-  const prepared = prepareBulkProductSearches([products[0], { ...products[0], ean: "1234 5678" }], [websites[0], websites[0]]);
+  const prepared = prepareBulkProductSearches([products[0], { ...products[0], ean: "1234 5670" }], [websites[0], websites[0]]);
   assert.equal(prepared.productCount, 1);
   assert.equal(prepared.websiteCount, 1);
   assert.equal(prepared.inputs.length, 1);
+});
+
+test("rejects a GTIN with an invalid check digit", () => {
+  assert.throws(() => prepareBulkProductSearches([{ productName: "Invalid", ean: "12345678" }], [websites[0]]), /check digit/i);
 });
 
 test("rejects duplicate EAN rows with conflicting details", () => {

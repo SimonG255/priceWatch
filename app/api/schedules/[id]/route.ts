@@ -2,6 +2,8 @@ import { and, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../../db";
 import { monitoredProducts, scraperSchedules } from "../../../../db/schema";
 import { getCurrentUserEmail } from "../../../../lib/current-user";
+import { getOrCreateUserPlan, minimumCadenceMinutes } from "../../../../lib/plans";
+import { APP_TIME_ZONE } from "../../../../lib/time-zone";
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const ownerEmail = await getCurrentUserEmail();
@@ -23,6 +25,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
     const cadenceMinutes = input.cadenceMinutes == null ? existing.cadenceMinutes : Math.round(Number(input.cadenceMinutes));
     if (!Number.isFinite(cadenceMinutes) || cadenceMinutes < 15 || cadenceMinutes > 43_200) throw new Error("Choose a cadence between 15 minutes and 30 days.");
+    const plan = await getOrCreateUserPlan(ownerEmail);
+    const minimumCadence = minimumCadenceMinutes(plan);
+    if (cadenceMinutes < minimumCadence) throw new Error(`Your ${plan.key} plan supports up to ${plan.checksPerDay} checks per day. Choose ${minimumCadence} minutes or longer.`);
     const enabled = typeof input.enabled === "boolean" ? input.enabled : existing.enabled;
     const targetMode = input.targetMode === "selected" || input.targetMode === "all" ? input.targetMode : existing.targetMode;
     const requestedIds = Array.isArray(input.productIds)
@@ -45,7 +50,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       if (duplicate) return Response.json({ error: "An all-products schedule already exists. Edit or resume it instead." }, { status: 409 });
     }
 
-    const timeZone = validateTimeZone(typeof input.timeZone === "string" ? input.timeZone : existing.timeZone);
+    const timeZone = validateTimeZone(typeof input.timeZone === "string" ? input.timeZone : existing.timeZone === "UTC" ? APP_TIME_ZONE : existing.timeZone);
     const targetChanged = targetMode !== existing.targetMode
       || stableIds(productIds) !== stableIds(parseProductIds(existing.productIdsJson));
     const timingChanged = cadenceMinutes !== existing.cadenceMinutes || (!existing.enabled && enabled) || targetChanged;
@@ -107,7 +112,7 @@ function selectedProductIds(ids: string[]) {
 function stableIds(ids: string[]) { return JSON.stringify([...ids].sort()); }
 
 function validateTimeZone(value: string) {
-  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return value; } catch { return "UTC"; }
+  try { new Intl.DateTimeFormat("en", { timeZone: value }).format(); return value; } catch { return APP_TIME_ZONE; }
 }
 
 function publicSchedule(schedule: typeof scraperSchedules.$inferSelect, productIds: string[]) {

@@ -16,6 +16,25 @@ test("normalizes a store hostname and preserves editable profile fields", () => 
   });
 });
 
+test("accepts a full hostname URL but rejects a hostname with a path", () => {
+  assert.equal(
+    validateSearchProfileInput({
+      label: "Jager search",
+      hostname: "https://www.trgovinejager.com/",
+      searchUrlTemplate: "/iskalnik/?isci={query}",
+    }).hostname,
+    "trgovinejager.com",
+  );
+  assert.throws(
+    () => validateSearchProfileInput({
+      label: "Jager search",
+      hostname: "https://www.trgovinejager.com/shop",
+      searchUrlTemplate: "/iskalnik/?isci={query}",
+    }),
+    /without a path/i,
+  );
+});
+
 test("keeps safe per-store extraction and challenge settings", () => {
   const profile = validateSearchProfileInput({
     label: "Catalog", hostname: "store.example", searchUrlTemplate: "/find/{query}",

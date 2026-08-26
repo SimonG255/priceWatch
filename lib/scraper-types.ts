@@ -18,7 +18,6 @@ export type ScraperReasonCode =
   | "known_bad_pattern"
   | "profile_drift"
   | "stale_result"
-  | "cloudflare"
   | "captcha"
   | "bot_wall"
   | "login_wall"
@@ -29,7 +28,7 @@ export type ScraperReasonCode =
 
 export type ScraperFailureClass = "none" | "temporary" | "permanent";
 
-export type ChallengeType = "cloudflare" | "captcha" | "bot_wall" | "login_wall" | "js_challenge";
+export type ChallengeType = "captcha" | "bot_wall" | "login_wall" | "js_challenge";
 
 export type ConfidenceScores = {
   /** Exact or structured barcode identity evidence, from 0 to 100. */

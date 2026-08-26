@@ -18,6 +18,7 @@ import {
   markScrapeRunSuperseded,
   startScrapeRun,
 } from "./scraper-operations.ts";
+import { APP_TIME_ZONE, formatAppTime } from "./time-zone";
 
 export async function runProductScan(input: {
   ownerEmail: string;
@@ -82,7 +83,7 @@ export async function runProductScan(input: {
   const availability = await getScraperDomainAvailability(hostname);
   if (!input.ignoreCooldown && !availability.allowed) {
     const retry = availability.retryAt
-      ? ` Try again after ${new Intl.DateTimeFormat("en", { timeStyle: "short", timeZone: "UTC" }).format(new Date(availability.retryAt))} UTC.`
+      ? ` Try again after ${formatAppTime(availability.retryAt)} (${APP_TIME_ZONE}).`
       : "";
     const result: ProductSearchResult = {
       status: "unavailable",
@@ -107,7 +108,7 @@ export async function runProductScan(input: {
       db.select().from(customSearchProfiles).where(eq(customSearchProfiles.enabled, true)),
       loadScraperContext(hostname),
     ]);
-    const normalizedProfiles = profiles.map((profile: { siteType: string; [key: string]: unknown }) => ({
+    const normalizedProfiles = profiles.map((profile) => ({
       ...profile,
       siteType: normalizeSiteType(profile.siteType),
     }));
@@ -183,28 +184,31 @@ export async function runProductScan(input: {
 
 async function persistProductResult(productId: string, ownerEmail: string, runId: string, result: ProductSearchResult) {
   const now = new Date().toISOString();
+  const verifiedObservation = result.status === "found" ? {
+    matchedUrl: result.matchedUrl ?? null,
+    resultTitle: result.title ?? null,
+    priceCents: result.priceCents ?? null,
+    currency: result.currency ?? null,
+    inStock: result.inStock ?? null,
+    matchType: result.matchType ?? null,
+    confidence: result.confidence ?? null,
+    evidenceJson: result.evidence ? JSON.stringify(result.evidence) : null,
+    pageEtag: result.pageEtag ?? null,
+    pageLastModified: result.pageLastModified ?? null,
+    confidenceScoresJson: result.confidenceScores ? JSON.stringify(result.confidenceScores) : null,
+    lastContentHash: result.contentHash ?? result.evidence?.contentHash ?? null,
+  } : {};
   const [updated] = await getDb()
     .update(monitoredProducts)
     .set({
       status: result.status,
       statusMessage: result.message,
-      matchedUrl: result.matchedUrl ?? null,
-      resultTitle: result.title ?? null,
-      priceCents: result.priceCents ?? null,
-      currency: result.currency ?? null,
-      inStock: result.inStock ?? null,
-      matchType: result.matchType ?? null,
-      confidence: result.confidence ?? null,
-      evidenceJson: result.evidence ? JSON.stringify(result.evidence) : null,
-      pageEtag: result.pageEtag ?? null,
-      pageLastModified: result.pageLastModified ?? null,
+      ...verifiedObservation,
       lastHttpStatus: result.httpStatus ?? null,
       reasonCode: result.reasonCode ?? null,
       failureClass: result.failureClass ?? null,
       challengeType: result.challengeType ?? null,
-      confidenceScoresJson: result.confidenceScores ? JSON.stringify(result.confidenceScores) : null,
       lastDurationMs: result.durationMs ?? null,
-      lastContentHash: result.contentHash ?? result.evidence?.contentHash ?? null,
       lastScanId: runId,
       lastCheckedAt: now,
       updatedAt: now,

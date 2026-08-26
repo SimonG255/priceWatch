@@ -11,11 +11,9 @@ export async function GET() {
   await ensureProductsSchema();
   const db = getDb();
   const [profiles, savedWebsites, productWebsites, health] = await Promise.all([
-    db.select().from(customSearchProfiles).orderBy(desc(customSearchProfiles.createdAt)) as Array<
-      Record<string, unknown>
-    >,
-    db.select({ url: monitoredWebsites.url }).from(monitoredWebsites) as Array<{ url: string }>,
-    db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts) as Array<{ url: string }>,
+    db.select().from(customSearchProfiles).orderBy(desc(customSearchProfiles.createdAt)),
+    db.select({ url: monitoredWebsites.url }).from(monitoredWebsites),
+    db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts),
     listScraperDomainHealth(),
   ]);
   const websites = listAdminWebsiteInventory([...savedWebsites, ...productWebsites]);

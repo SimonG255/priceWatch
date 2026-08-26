@@ -47,18 +47,10 @@ export type ChallengeClassification = {
   message: string;
 };
 
-export function detectAccessChallenge(html: string, profilePatterns: string[] = [], response?: { status?: number; server?: string; cfMitigated?: string; cfRay?: string }): ChallengeClassification | undefined {
+export function detectAccessChallenge(html: string, profilePatterns: string[] = []): ChallengeClassification | undefined {
   const page = html.slice(0, 180_000).toLowerCase();
   const visible = page.replace(/<script\b[\s\S]*?<\/script>/gi, " ").replace(/<style\b[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   const custom = profilePatterns.find((pattern) => pattern && page.includes(pattern.toLowerCase()));
-  if (
-    (response?.status === 403 && Boolean(response.cfMitigated || response.cfRay) && /cloudflare/i.test(response.server ?? ""))
-    || /challenge/i.test(response?.cfMitigated ?? "")
-    || page.includes("cf-chl-")
-    || page.includes("/cdn-cgi/challenge-platform")
-    || page.includes("cloudflare ray id")
-    || page.includes("<title>just a moment")
-  ) return challenge("cloudflare", "Cloudflare challenge detected.");
   const captchaWidget = /(?:g-recaptcha|hcaptcha|turnstile-wrapper|captcha-container)/i.test(page);
   const captchaWallText = /(?:complete|solve|enter)\s+(?:the\s+)?captcha|captcha\s+(?:is\s+)?required|verify\s+(?:that\s+)?you(?:'re| are)\s+human/i.test(visible);
   if (captchaWallText || (captchaWidget && visible.length < 1_500 && /captcha|human|verification/i.test(visible))) return challenge("captcha", "CAPTCHA challenge detected.");
@@ -79,6 +71,7 @@ export function detectAccessChallenge(html: string, profilePatterns: string[] = 
     page.includes("enable javascript and cookies to continue")
     || page.includes("javascript is required to continue")
     || page.includes("checking your browser before accessing")
+    || page.includes("<title>just a moment")
     || page.includes("js challenge")
   ) return challenge("js_challenge", "JavaScript challenge detected.");
   return custom ? challenge("bot_wall", `Configured challenge marker detected: ${custom.slice(0, 80)}`) : undefined;
@@ -112,7 +105,7 @@ export function exponentialBackoffMs(input: {
 }
 
 function reasonBackoffBase(reason: ScraperReasonCode) {
-  if (["cloudflare", "captcha", "bot_wall", "login_wall", "js_challenge", "blocked"].includes(reason)) return 2 * 60 * 1_000;
+  if (["captcha", "bot_wall", "login_wall", "js_challenge", "blocked"].includes(reason)) return 2 * 60 * 1_000;
   if (reason === "rate_limited") return 60_000;
   if (reason === "timeout" || reason === "http_server_error" || reason === "network_error") return 30_000;
   if (reason === "profile_drift" || reason === "low_confidence" || reason === "price_missing") return 5 * 60 * 1_000;

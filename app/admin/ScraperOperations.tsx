@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { formatAppDateTime } from "../../lib/time-zone";
 
 type Domain = {
   hostname: string; totalChecks: number; successfulChecks: number; notFoundChecks: number;
@@ -19,7 +20,7 @@ type Operations = {
 };
 
 const REASONS: Record<string, string> = {
-  cloudflare: "Cloudflare challenge", captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login wall", js_challenge: "JavaScript challenge",
+  captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login wall", js_challenge: "JavaScript challenge",
   wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", rate_limited: "Rate limited", timeout: "Timed out",
   response_too_large: "Page too large", robots_disallowed: "Robots/policy block", known_bad_pattern: "Known bad page", profile_drift: "Profile drift",
   stale_result: "Superseded scan",
@@ -134,19 +135,19 @@ export default function ScraperOperations() {
       <div className="admin-intro operations-title"><div><span className="editor-mode">LIVE OPERATIONS</span><h2>Domain health and bulk retesting</h2><p>Operational success includes completed “not found” checks. A verified match is tracked separately from website availability.</p></div><button disabled={busy || !selected.length} onClick={retestSelected}>{retestProcessedIds.length ? "Continue retest" : "Retest selected"} ({selected.length})</button></div>
       <div className="admin-table-wrap"><table><thead><tr><th/><th>Domain</th><th>Health</th><th>Latest reason</th><th>Failures</th><th>Latency</th><th>Cooldown</th></tr></thead><tbody>{data.domains.map((domain) => <tr key={domain.hostname}>
         <td><input type="checkbox" aria-label={`Select ${domain.hostname}`} checked={selected.includes(domain.hostname)} onChange={() => { setRetestProcessedIds([]); setRetestLastHostname(""); setSelected((current) => current.includes(domain.hostname) ? current.filter((item) => item !== domain.hostname) : [...current, domain.hostname]); }}/></td>
-        <td><code>{domain.hostname}</code><small>{domain.lastCheckedAt ? new Date(domain.lastCheckedAt).toLocaleString() : "Never checked"}</small></td>
+        <td><code>{domain.hostname}</code><small>{domain.lastCheckedAt ? formatAppDateTime(domain.lastCheckedAt) : "Never checked"}</small></td>
         <td><span className={`health-score ${domain.successRate >= .8 ? "healthy" : domain.successRate >= .5 ? "degraded" : "critical"}`}>{percent(domain.successRate)}</span><small>{domain.totalChecks} checks</small></td>
         <td><span className={`health-status ${domain.lastOutcome || "unknown"}`}>{reasonLabel(domain.lastReasonCode || domain.lastOutcome)}</span><small>{domain.failureClass || "no failure"}{domain.lastChallengeType ? ` · ${domain.lastChallengeType}` : ""}</small></td>
         <td>{domain.consecutiveFailures}<small>{domain.blockedChecks} blocked · {domain.unavailableChecks} unavailable · {domain.needsReviewChecks} review</small></td>
         <td>{domain.averageResponseMs == null ? "—" : `${domain.averageResponseMs.toLocaleString()} ms`}</td>
-        <td>{domain.backoffUntil && Date.parse(domain.backoffUntil) > Date.parse(data.generatedAt) ? new Date(domain.backoffUntil).toLocaleString() : "Ready"}</td>
+        <td>{domain.backoffUntil && Date.parse(domain.backoffUntil) > Date.parse(data.generatedAt) ? formatAppDateTime(domain.backoffUntil) : "Ready"}</td>
       </tr>)}</tbody></table></div>
       {notice && <p className="operations-notice" aria-live="polite">{notice}</p>}
     </section>
 
     <div className="operations-columns">
-      <section className="admin-card"><div className="admin-intro"><h2>Profile drift and recent changes</h2><p>Suggestions are review-only and are never saved automatically.</p></div><div className="profile-health-list">{data.profiles.slice(0, 12).map((profile) => <article key={profile.id}><div><strong>{profile.label}</strong><code>{profile.hostname || "HTML signature"}</code></div><span className={`profile-health ${profile.driftStatus}`}>{profile.healthScore}% · {profile.driftStatus}</span><small>Updated {new Date(profile.updatedAt).toLocaleString()}{profile.lastSeenWorkingAt ? ` · last verified ${new Date(profile.lastSeenWorkingAt).toLocaleDateString()}` : ""}</small>{profile.selectorSuggestionsJson && <details><summary>Selector suggestions</summary><code>{parseSuggestions(profile.selectorSuggestionsJson).join(" · ")}</code></details>}</article>)}</div></section>
-      <section className="admin-card"><div className="admin-intro"><h2>Alerting and audit</h2><p>{data.alerting.slackConfigured || data.alerting.emailConfigured ? `Delivery ready: ${[data.alerting.slackConfigured && "Slack", data.alerting.emailConfigured && "email"].filter(Boolean).join(" and ")}.` : "Configure SLACK_WEBHOOK_URL or ALERT_EMAIL_WEBHOOK_URL in Site runtime settings to deliver threshold alerts."}</p></div><div className="audit-list">{data.recentRuns.slice(0, 12).map((run) => <article key={run.id}><span className={`health-status ${run.status}`}>{run.status}</span><div><strong>{run.hostname}</strong><small>{reasonLabel(run.reasonCode)} · {run.profileId || "automatic profile"} · {run.attemptCount} attempts</small></div><time>{run.durationMs == null ? "—" : `${run.durationMs} ms`} · {new Date(run.startedAt).toLocaleString()}</time></article>)}</div>{Boolean(data.needsReview.length) && <><h3 className="review-queue-title">Pages needing review</h3><div className="audit-list review-queue">{data.needsReview.slice(0, 8).map((run) => <article key={`review-${run.id}`}><span className="health-status needs_review">Review</span><div><strong>{run.hostname}</strong><small>{reasonLabel(run.reasonCode)} · {run.message || "Extraction needs an administrator decision"}</small></div><time>{new Date(run.startedAt).toLocaleString()}</time></article>)}</div></>}</section>
+      <section className="admin-card"><div className="admin-intro"><h2>Profile drift and recent changes</h2><p>Suggestions are review-only and are never saved automatically.</p></div><div className="profile-health-list">{data.profiles.slice(0, 12).map((profile) => <article key={profile.id}><div><strong>{profile.label}</strong><code>{profile.hostname || "HTML signature"}</code></div><span className={`profile-health ${profile.driftStatus}`}>{profile.healthScore}% · {profile.driftStatus}</span><small>Updated {formatAppDateTime(profile.updatedAt)}{profile.lastSeenWorkingAt ? ` · last verified ${formatAppDateTime(profile.lastSeenWorkingAt)}` : ""}</small>{profile.selectorSuggestionsJson && <details><summary>Selector suggestions</summary><code>{parseSuggestions(profile.selectorSuggestionsJson).join(" · ")}</code></details>}</article>)}</div></section>
+      <section className="admin-card"><div className="admin-intro"><h2>Alerting and audit</h2><p>{data.alerting.slackConfigured || data.alerting.emailConfigured ? `Delivery ready: ${[data.alerting.slackConfigured && "Slack", data.alerting.emailConfigured && "email"].filter(Boolean).join(" and ")}.` : "Configure SLACK_WEBHOOK_URL or ALERT_EMAIL_WEBHOOK_URL in Site runtime settings to deliver threshold alerts."}</p></div><div className="audit-list">{data.recentRuns.slice(0, 12).map((run) => <article key={run.id}><span className={`health-status ${run.status}`}>{run.status}</span><div><strong>{run.hostname}</strong><small>{reasonLabel(run.reasonCode)} · {run.profileId || "automatic profile"} · {run.attemptCount} attempts</small></div><time>{run.durationMs == null ? "—" : `${run.durationMs} ms`} · {formatAppDateTime(run.startedAt)}</time></article>)}</div>{Boolean(data.needsReview.length) && <><h3 className="review-queue-title">Pages needing review</h3><div className="audit-list review-queue">{data.needsReview.slice(0, 8).map((run) => <article key={`review-${run.id}`}><span className="health-status needs_review">Review</span><div><strong>{run.hostname}</strong><small>{reasonLabel(run.reasonCode)} · {run.message || "Extraction needs an administrator decision"}</small></div><time>{formatAppDateTime(run.startedAt)}</time></article>)}</div></>}</section>
     </div>
 
     <section className="admin-card safety-rules"><div className="admin-intro"><h2>Safety rules</h2><p>Explicit domain blocks always win, robots.txt is always respected, and known-bad rules use bounded literal or * wildcard matching rather than executable regular expressions.</p></div><div className="safety-forms">
@@ -158,5 +159,5 @@ export default function ScraperOperations() {
 }
 
 function percent(value: number) { return `${Math.round(value * 1000) / 10}%`; }
-function reasonLabel(value: string | null) { return value ? REASONS[value] || value.replaceAll("_", " ") : "No failures"; }
+function reasonLabel(value: string | null) { return value ? REASONS[value] || (value.includes("_") ? value.replaceAll("_", " ") : "Access challenge") : "No failures"; }
 function parseSuggestions(value: string) { try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; } }

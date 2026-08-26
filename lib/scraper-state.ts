@@ -1,6 +1,7 @@
 import { and, desc, eq, gt } from "drizzle-orm";
 import { getDb } from "../db";
 import { scraperDomainCooldowns, scraperDomainState, scraperSitemapHints } from "../db/schema";
+import { sitemapCacheKey } from "./cache-keys.ts";
 import { assertPublicHostname } from "./product-input.ts";
 import { exponentialBackoffMs, failureClassFor } from "./scraper-diagnostics.ts";
 import type {
@@ -30,42 +31,32 @@ export async function reserveScraperDomain(hostname: string, options: { interval
     return {
       allowed: false as const,
       retryAt: cooldown[0].cooldownUntil,
-      reasonCode: cooldown[0].reasonCode,
-      failureClass: cooldown[0].failureClass,
+      reasonCode: cooldown[0].reasonCode as ScraperReasonCode,
+      failureClass: cooldown[0].failureClass as ScraperFailureClass,
       retryBudgetRemaining: cooldown[0].retryBudgetRemaining,
     };
   }
-  const state = await db.select().from(scraperDomainState).where(eq(scraperDomainState.hostname, normalized)).limit(1);
-  const current = state[0];
   const nextAllowedAt = new Date(now.getTime() + intervalMs).toISOString();
+  const [current] = await db
+    .select()
+    .from(scraperDomainState)
+    .where(eq(scraperDomainState.hostname, normalized))
+    .limit(1);
   if (!current || !current.nextAllowedAt || new Date(current.nextAllowedAt).getTime() <= now.getTime()) {
     await db
       .insert(scraperDomainState)
-      .values({
-        hostname: normalized,
-        nextAllowedAt,
-        backoffUntil: current?.backoffUntil ?? null,
-        consecutiveFailures: current?.consecutiveFailures ?? 0,
-        totalChecks: current?.totalChecks ?? 0,
-        blockedChecks: current?.blockedChecks ?? 0,
-        unavailableChecks: current?.unavailableChecks ?? 0,
-        needsReviewChecks: current?.needsReviewChecks ?? 0,
-        updatedAt: nowIso,
-      })
+      .values({ hostname: normalized, nextAllowedAt, updatedAt: nowIso })
       .onConflictDoUpdate({
         target: scraperDomainState.hostname,
-        set: {
-          nextAllowedAt,
-          updatedAt: nowIso,
-        },
+        set: { nextAllowedAt, updatedAt: nowIso },
       });
     return { allowed: true as const };
   }
   return {
     allowed: false as const,
-    retryAt: current.nextAllowedAt,
-    reasonCode: current.lastReasonCode ?? undefined,
-    failureClass: current.failureClass ?? undefined,
+    retryAt: current?.nextAllowedAt ?? undefined,
+    reasonCode: (current?.lastReasonCode as ScraperReasonCode | null | undefined) ?? undefined,
+    failureClass: (current?.failureClass as ScraperFailureClass | null | undefined) ?? undefined,
     retryBudgetRemaining: current.retryBudgetRemaining ?? undefined,
   };
 }
@@ -98,8 +89,8 @@ export async function getScraperDomainAvailability(hostname: string) {
     ? {
         allowed: false as const,
         retryAt,
-        reasonCode: cooldown?.reasonCode ?? state?.lastReasonCode,
-        failureClass: cooldown?.failureClass ?? state?.failureClass,
+        reasonCode: (cooldown?.reasonCode ?? state?.lastReasonCode) as ScraperReasonCode | undefined,
+        failureClass: (cooldown?.failureClass ?? state?.failureClass) as ScraperFailureClass | undefined,
         retryBudgetRemaining: cooldown?.retryBudgetRemaining ?? state?.retryBudgetRemaining,
       }
     : { allowed: true as const };
@@ -136,44 +127,70 @@ export async function recordScraperDomainOutcome(input: {
     : null;
   const retryBudgetRemaining = Math.max(0, 3 - nextFailureCount);
   const isFailure = input.status === "blocked" || input.status === "unavailable" || input.status === "needs_review";
-  const currentState = (
-    await db.select().from(scraperDomainState).where(eq(scraperDomainState.hostname, hostname)).limit(1)
-  )[0];
-  const nextState = {
-    hostname,
-    backoffUntil,
-    consecutiveFailures: isFailure ? (currentState?.consecutiveFailures ?? 0) + 1 : 0,
-    totalChecks: (currentState?.totalChecks ?? 0) + 1,
-    blockedChecks: (currentState?.blockedChecks ?? 0) + (input.status === "blocked" ? 1 : 0),
-    unavailableChecks: (currentState?.unavailableChecks ?? 0) + (input.status === "unavailable" ? 1 : 0),
-    needsReviewChecks: (currentState?.needsReviewChecks ?? 0) + (input.status === "needs_review" ? 1 : 0),
-    lastOutcome: input.status,
-    lastFailureKind: isFailure ? reasonCode : null,
-    lastProfileId: input.evidence?.profileId ?? null,
-    lastCheckedAt: checkedAt,
-    lastSuccessAt: input.status === "found" ? checkedAt : (currentState?.lastSuccessAt ?? null),
-    backoffExponent: failureClass === "temporary" ? (currentState?.backoffExponent ?? 0) + 1 : 0,
-    retryBudgetRemaining,
-    cooldownReason: backoffUntil ? reasonCode : null,
-    failureClass,
-    lastReasonCode: reasonCode,
-    lastChallengeType: input.challengeType ?? null,
-    successfulChecks: (currentState?.successfulChecks ?? 0) + (input.status === "found" ? 1 : 0),
-    notFoundChecks: (currentState?.notFoundChecks ?? 0) + (input.status === "not_found" ? 1 : 0),
-    temporaryFailureChecks: (currentState?.temporaryFailureChecks ?? 0) + (failureClass === "temporary" ? 1 : 0),
-    permanentFailureChecks: (currentState?.permanentFailureChecks ?? 0) + (failureClass === "permanent" ? 1 : 0),
-    challengeChecks: (currentState?.challengeChecks ?? 0) + (input.challengeType ? 1 : 0),
-    totalResponseMs: (currentState?.totalResponseMs ?? 0) + (input.durationMs ?? 0),
-    responseSamples: (currentState?.responseSamples ?? 0) + (input.durationMs == null ? 0 : 1),
-    lastResponseMs: input.durationMs ?? null,
-    updatedAt: checkedAt,
-  };
-  const stateValues = { ...nextState, nextAllowedAt: null as string | null };
-  if (currentState) {
-    await db.update(scraperDomainState).set(stateValues).where(eq(scraperDomainState.hostname, hostname));
-  } else {
-    await db.insert(scraperDomainState).values(stateValues);
-  }
+  const [state] = await db.select().from(scraperDomainState).where(eq(scraperDomainState.hostname, hostname)).limit(1);
+  await db
+    .insert(scraperDomainState)
+    .values({
+      hostname,
+      nextAllowedAt: null,
+      backoffUntil,
+      consecutiveFailures: isFailure ? (state?.consecutiveFailures ?? 0) + 1 : 0,
+      totalChecks: (state?.totalChecks ?? 0) + 1,
+      blockedChecks: (state?.blockedChecks ?? 0) + (input.status === "blocked" ? 1 : 0),
+      unavailableChecks: (state?.unavailableChecks ?? 0) + (input.status === "unavailable" ? 1 : 0),
+      needsReviewChecks: (state?.needsReviewChecks ?? 0) + (input.status === "needs_review" ? 1 : 0),
+      lastOutcome: input.status,
+      lastFailureKind: isFailure ? reasonCode : null,
+      lastProfileId: input.evidence?.profileId ?? state?.lastProfileId ?? null,
+      lastCheckedAt: checkedAt,
+      lastSuccessAt: input.status === "found" ? checkedAt : (state?.lastSuccessAt ?? null),
+      backoffExponent: failureClass === "temporary" ? (state?.backoffExponent ?? 0) + 1 : 0,
+      retryBudgetRemaining: retryBudgetRemaining,
+      cooldownReason: backoffUntil ? reasonCode : null,
+      failureClass: failureClass,
+      lastReasonCode: reasonCode,
+      lastChallengeType: input.challengeType ?? state?.lastChallengeType ?? null,
+      successfulChecks: (state?.successfulChecks ?? 0) + (input.status === "found" ? 1 : 0),
+      notFoundChecks: (state?.notFoundChecks ?? 0) + (input.status === "not_found" ? 1 : 0),
+      temporaryFailureChecks: (state?.temporaryFailureChecks ?? 0) + (failureClass === "temporary" ? 1 : 0),
+      permanentFailureChecks: (state?.permanentFailureChecks ?? 0) + (failureClass === "permanent" ? 1 : 0),
+      challengeChecks: (state?.challengeChecks ?? 0) + (input.challengeType ? 1 : 0),
+      totalResponseMs: (state?.totalResponseMs ?? 0) + (input.durationMs ?? 0),
+      responseSamples: (state?.responseSamples ?? 0) + (input.durationMs == null ? 0 : 1),
+      lastResponseMs: input.durationMs ?? state?.lastResponseMs ?? null,
+      updatedAt: checkedAt,
+    })
+    .onConflictDoUpdate({
+      target: scraperDomainState.hostname,
+      set: {
+        backoffUntil,
+        consecutiveFailures: isFailure ? (state?.consecutiveFailures ?? 0) + 1 : 0,
+        totalChecks: (state?.totalChecks ?? 0) + 1,
+        blockedChecks: (state?.blockedChecks ?? 0) + (input.status === "blocked" ? 1 : 0),
+        unavailableChecks: (state?.unavailableChecks ?? 0) + (input.status === "unavailable" ? 1 : 0),
+        needsReviewChecks: (state?.needsReviewChecks ?? 0) + (input.status === "needs_review" ? 1 : 0),
+        lastOutcome: input.status,
+        lastFailureKind: isFailure ? reasonCode : null,
+        lastProfileId: input.evidence?.profileId ?? state?.lastProfileId ?? null,
+        lastCheckedAt: checkedAt,
+        lastSuccessAt: input.status === "found" ? checkedAt : (state?.lastSuccessAt ?? null),
+        backoffExponent: failureClass === "temporary" ? (state?.backoffExponent ?? 0) + 1 : 0,
+        retryBudgetRemaining: retryBudgetRemaining,
+        cooldownReason: backoffUntil ? reasonCode : null,
+        failureClass: failureClass,
+        lastReasonCode: reasonCode,
+        lastChallengeType: input.challengeType ?? state?.lastChallengeType ?? null,
+        successfulChecks: (state?.successfulChecks ?? 0) + (input.status === "found" ? 1 : 0),
+        notFoundChecks: (state?.notFoundChecks ?? 0) + (input.status === "not_found" ? 1 : 0),
+        temporaryFailureChecks: (state?.temporaryFailureChecks ?? 0) + (failureClass === "temporary" ? 1 : 0),
+        permanentFailureChecks: (state?.permanentFailureChecks ?? 0) + (failureClass === "permanent" ? 1 : 0),
+        challengeChecks: (state?.challengeChecks ?? 0) + (input.challengeType ? 1 : 0),
+        totalResponseMs: (state?.totalResponseMs ?? 0) + (input.durationMs ?? 0),
+        responseSamples: (state?.responseSamples ?? 0) + (input.durationMs == null ? 0 : 1),
+        lastResponseMs: input.durationMs ?? state?.lastResponseMs ?? null,
+        updatedAt: checkedAt,
+      },
+    });
   if (backoffUntil) {
     await db
       .insert(scraperDomainCooldowns)
@@ -316,7 +333,6 @@ function reasonCodeForStatus(status: ScraperStatus): ScraperReasonCode {
 function hostCooldownReason(reason: ScraperReasonCode) {
   return [
     "blocked",
-    "cloudflare",
     "captcha",
     "bot_wall",
     "js_challenge",
@@ -326,10 +342,6 @@ function hostCooldownReason(reason: ScraperReasonCode) {
     "http_server_error",
     "network_error",
   ].includes(reason);
-}
-
-function sitemapCacheKey(hostname: string, ean: string) {
-  return `${normalizeHostname(hostname)}\u0000${ean.replace(/\D/g, "")}`;
 }
 
 function normalizeHostname(value: string) {
