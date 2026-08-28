@@ -9,6 +9,7 @@ type Domain = {
   lastOutcome: string | null; lastReasonCode: string | null; failureClass: string | null;
   lastChallengeType: string | null; backoffUntil: string | null; lastCheckedAt: string | null;
   successRate: number; averageResponseMs: number | null; healthScore: number;
+  lastFailure: { status: string; reasonCode: string | null; message: string | null; startedAt: string } | null;
 };
 type Run = { id: string; hostname: string; trigger: string; profileId: string | null; status: string; reasonCode: string | null; failureClass: string | null; challengeType: string | null; message: string | null; durationMs: number | null; attemptCount: number; startedAt: string };
 type Profile = { id: string; label: string; hostname: string; healthScore: number; driftStatus: string; lastSeenWorkingAt: string | null; updatedAt: string; selectorSuggestionsJson: string | null };
@@ -133,12 +134,12 @@ export default function ScraperOperations() {
 
     <section className="admin-card operations-console">
       <div className="admin-intro operations-title"><div><span className="editor-mode">LIVE OPERATIONS</span><h2>Domain health and bulk retesting</h2><p>Operational success includes completed “not found” checks. A verified match is tracked separately from website availability.</p></div><button disabled={busy || !selected.length} onClick={retestSelected}>{retestProcessedIds.length ? "Continue retest" : "Retest selected"} ({selected.length})</button></div>
-      <div className="admin-table-wrap"><table><thead><tr><th/><th>Domain</th><th>Health</th><th>Latest reason</th><th>Failures</th><th>Latency</th><th>Cooldown</th></tr></thead><tbody>{data.domains.map((domain) => <tr key={domain.hostname}>
+      <div className="admin-table-wrap"><table><thead><tr><th/><th>Domain</th><th>Health</th><th>Latest reason</th><th>Last failure</th><th>Latency</th><th>Cooldown</th></tr></thead><tbody>{data.domains.map((domain) => <tr key={domain.hostname}>
         <td><input type="checkbox" aria-label={`Select ${domain.hostname}`} checked={selected.includes(domain.hostname)} onChange={() => { setRetestProcessedIds([]); setRetestLastHostname(""); setSelected((current) => current.includes(domain.hostname) ? current.filter((item) => item !== domain.hostname) : [...current, domain.hostname]); }}/></td>
         <td><code>{domain.hostname}</code><small>{domain.lastCheckedAt ? formatAppDateTime(domain.lastCheckedAt) : "Never checked"}</small></td>
         <td><span className={`health-score ${domain.successRate >= .8 ? "healthy" : domain.successRate >= .5 ? "degraded" : "critical"}`}>{percent(domain.successRate)}</span><small>{domain.totalChecks} checks</small></td>
         <td><span className={`health-status ${domain.lastOutcome || "unknown"}`}>{reasonLabel(domain.lastReasonCode || domain.lastOutcome)}</span><small>{domain.failureClass || "no failure"}{domain.lastChallengeType ? ` · ${domain.lastChallengeType}` : ""}</small></td>
-        <td>{domain.consecutiveFailures}<small>{domain.blockedChecks} blocked · {domain.unavailableChecks} unavailable · {domain.needsReviewChecks} review</small></td>
+        <td>{domain.lastFailure ? <><span className="health-status blocked">{reasonLabel(domain.lastFailure.reasonCode || domain.lastFailure.status)}</span><small title={domain.lastFailure.message || ""}>{formatAppDateTime(domain.lastFailure.startedAt)}</small></> : <small>No failed scan recorded</small>}</td>
         <td>{domain.averageResponseMs == null ? "—" : `${domain.averageResponseMs.toLocaleString()} ms`}</td>
         <td>{domain.backoffUntil && Date.parse(domain.backoffUntil) > Date.parse(data.generatedAt) ? formatAppDateTime(domain.backoffUntil) : "Ready"}</td>
       </tr>)}</tbody></table></div>

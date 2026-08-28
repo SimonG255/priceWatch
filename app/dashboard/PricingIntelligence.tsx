@@ -50,12 +50,11 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
   const [notice, setNotice] = useState("");
   const [alerts, setAlerts] = useState<CustomerAlert[]>([]);
 
-  const priced = useMemo(() => products.filter((product) => product.status === "found" && product.priceCents != null), [products]);
   const comparisonGroups = useMemo(() => {
     const groups = new Map<string, IntelligenceProduct[]>();
-    for (const product of priced) groups.set(product.ean, [...(groups.get(product.ean) ?? []), product]);
+    for (const product of products) groups.set(product.ean, [...(groups.get(product.ean) ?? []), product]);
     return [...groups.entries()].map(([ean, offers]) => ({ ean, offers })).filter((group) => group.offers.length > 1);
-  }, [priced]);
+  }, [products]);
   const historiedProducts = useMemo(() => products.filter((product) => product.lastCheckedAt), [products]);
   const selectedHistoryProductId = historyProductId || historiedProducts[0]?.id || "";
   const snapshotGroups = useMemo(() => {
@@ -147,12 +146,15 @@ export default function PricingIntelligence({ products, onProductsChanged }: { p
       {!comparisonGroups.length ? <div className="intelligence-empty"><strong>No multi-store comparison yet</strong><span>Add the same EAN on at least two websites to compare verified offers.</span></div> : comparisonGroups.map((group) => <article className="comparison-group" key={group.ean}>
         <div><strong>{group.offers[0].productName}</strong><code>EAN {group.ean}</code></div>
         {[...new Set(group.offers.map((offer) => offer.currency || "Unknown currency"))].map((currency) => {
-          const offers = group.offers.filter((offer) => (offer.currency || "Unknown currency") === currency).sort((a, b) => stockRank(b.inStock) - stockRank(a.inStock) || (a.priceCents || Infinity) - (b.priceCents || Infinity));
-          const cheapest = offers.find((offer) => offer.inStock === true);
-          return <div className="currency-offers" key={currency}>{offers.map((offer) => <a key={offer.id} href={offer.matchedUrl || offer.websiteUrl} target="_blank" rel="noreferrer" className={offer.id === cheapest?.id ? "cheapest" : ""}>
-            <span><b>{new URL(offer.websiteUrl).hostname.replace(/^www\./, "")}</b><small>{offer.inStock === false ? "Out of stock" : offer.inStock == null ? "Stock unknown" : offer.id === cheapest?.id ? "Cheapest available" : "In stock"}</small>{confidenceLabel(offer.confidenceScoresJson) && <small>{confidenceLabel(offer.confidenceScoresJson)}</small>}</span>
-            <strong>{formatMoney(offer.priceCents, currency)}</strong>
-          </a>)}</div>;
+          const offers = group.offers.filter((offer) => (offer.currency || "Unknown currency") === currency).sort((a, b) => stockRank(b.inStock, b.status) - stockRank(a.inStock, a.status) || (a.priceCents ?? Infinity) - (b.priceCents ?? Infinity));
+          const cheapest = offers.filter((offer) => offer.status === "found" && offer.inStock === true && offer.priceCents != null).sort((a, b) => (a.priceCents ?? Infinity) - (b.priceCents ?? Infinity))[0];
+          return <div className="currency-offers" key={currency}>{offers.map((offer) => {
+            const difference = cheapest && offer.priceCents != null ? offer.priceCents - (cheapest.priceCents ?? offer.priceCents) : null;
+            return <div key={offer.id} className={`comparison-offer ${offer.id === cheapest?.id ? "cheapest" : ""}`}>
+              <span><b>{new URL(offer.websiteUrl).hostname.replace(/^www\./, "")}</b><small>{offer.status !== "found" ? `Unavailable · ${offer.status.replaceAll("_", " ")}` : offer.inStock === false ? "Out of stock" : offer.inStock == null ? "Stock unknown" : offer.id === cheapest?.id ? "Cheapest available" : "Available"}</small>{difference != null && difference > 0 && <small>{formatMoney(difference, currency)} above cheapest</small>}{confidenceLabel(offer.confidenceScoresJson) && <small>{confidenceLabel(offer.confidenceScoresJson)}</small>}</span>
+              <strong>{offer.priceCents == null ? "No verified price" : formatMoney(offer.priceCents, currency)}</strong><a className="visit-product" href={offer.matchedUrl || offer.websiteUrl} target="_blank" rel="noreferrer">Visit product</a>
+            </div>;
+          })}</div>;
         })}
       </article>)}
     </div>}
@@ -182,7 +184,7 @@ function formatMoney(priceCents: number | null, currency: string) {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(priceCents / 100);
 }
 
-function stockRank(value: boolean | null) { return value === true ? 2 : value == null ? 1 : 0; }
+function stockRank(value: boolean | null, status = "found") { return status === "found" && value === true ? 2 : status === "found" && value == null ? 1 : 0; }
 
 function confidenceLabel(value: string | null | undefined) {
   try {

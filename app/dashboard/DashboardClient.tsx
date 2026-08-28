@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import readXlsxFile from "read-excel-file";
 import writeXlsxFile from "write-excel-file";
 import { createClient as createSupabaseClient } from "../../lib/supabase/client";
@@ -11,14 +11,20 @@ import PricingIntelligence from "./PricingIntelligence";
 type IconName = "grid" | "box" | "settings" | "plus" | "search" | "bolt" | "external" | "menu" | "close" | "upload" | "download" | "refresh" | "trash" | "file";
 type Product = {
   id: string; websiteUrl: string; productName: string; ean: string; sku: string; notes: string;
-  ownPriceCents: number | null; alertOnPriceDrop: boolean; alertOnRestock: boolean;
+  ownPriceCents: number | null; alertOnPriceDrop: boolean; alertOnRestock: boolean; alertTargetPriceCents: number | null; alertDropPercentBps: number | null; monitoringEnabled: boolean;
   status: "queued" | "searching" | "found" | "not_found" | "blocked" | "unavailable" | "needs_review" | "error";
   statusMessage: string; matchedUrl: string | null; resultTitle: string | null; priceCents: number | null;
   currency: string | null; inStock: boolean | null; matchType: string | null; confidence: string | null; evidenceJson: string | null; lastCheckedAt: string | null; createdAt: string;
-  reasonCode?: string | null; failureClass?: string | null; challengeType?: string | null; confidenceScoresJson?: string | null; lastDurationMs?: number | null;
+  reasonCode?: string | null; failureClass?: string | null; challengeType?: string | null; confidenceScoresJson?: string | null; lastDurationMs?: number | null; lastScanId?: string | null;
 };
 type Website = { id: string; url: string; createdAt: string };
 type ProductDraft = { id: string; productName: string; ean: string; sku: string; ownPrice: string };
+type ProductGroup = { key: string; products: Product[]; primary: Product };
+type PriceSnapshot = { id: string; capturedAt: string; priceCents: number; currency: string; inStock: boolean | null; matchedUrl: string; priceSource?: string | null };
+type PriceSummary = { currency: string; minPriceCents: number | null; maxPriceCents: number | null; averagePriceCents: number | null; latestPriceCents: number | null; latestCapturedAt: string | null; changeCents: number | null; changePercent: number | null; observations: number };
+type ScanRun = { id: string; status: string; reasonCode: string | null; message: string | null; startedAt: string; completedAt: string | null; durationMs: number | null; attemptCount: number; hostname: string };
+type ScanAttempt = { id: string; url: string; outcome: string; reasonCode: string; message: string | null; durationMs: number; httpStatus: number | null };
+type ProductHistoryState = { loading: boolean; snapshots: PriceSnapshot[]; summaryByCurrency: PriceSummary[]; latestRun: ScanRun | null; attempts: ScanAttempt[]; error: string };
 
 const emptyDraft = (id = "product-1"): ProductDraft => ({ id, productName: "", ean: "", sku: "", ownPrice: "" });
 
@@ -52,6 +58,17 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   const [menu, setMenu] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [siteFilter, setSiteFilter] = useState("");
+  const [stockFilter, setStockFilter] = useState<"all" | "in" | "out" | "unknown">("all");
+  const [scanStatusFilter, setScanStatusFilter] = useState("all");
+  const [priceMin, setPriceMin] = useState("");
+  const [priceMax, setPriceMax] = useState("");
+  const [priceDropsOnly, setPriceDropsOnly] = useState(false);
+  const [needsAttention, setNeedsAttention] = useState(false);
+  const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+  const [expandedProductKey, setExpandedProductKey] = useState<string | null>(null);
+  const [historyByProduct, setHistoryByProduct] = useState<Record<string, ProductHistoryState>>({});
   const [selectedWebsiteIds, setSelectedWebsiteIds] = useState<string[]>([]);
   const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
   const [productDrafts, setProductDrafts] = useState<ProductDraft[]>([emptyDraft()]);
@@ -75,10 +92,51 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     setProducts(data.products);
   }
 
-  const filtered = useMemo(() => {
+  async function toggleProductHistory(group: ProductGroup) {
+    if (expandedProductKey === group.key) {
+      setExpandedProductKey(null);
+      return;
+    }
+    setExpandedProductKey(group.key);
+    const productsToLoad = group.products.filter(product => !historyByProduct[product.id]);
+    if (!productsToLoad.length) return;
+    setHistoryByProduct(current => {
+      const next = { ...current };
+      for (const product of productsToLoad) next[product.id] = { loading: true, snapshots: [], summaryByCurrency: [], latestRun: null, attempts: [], error: "" };
+      return next;
+    });
+    await Promise.all(productsToLoad.map(async product => {
+      try {
+        const [history, runs] = await Promise.all([
+          jsonRequest<{ snapshots?: PriceSnapshot[]; summaryByCurrency?: PriceSummary[] }>(`/api/products/${product.id}/history?limit=100`, { headers: { Accept: "application/json" } }),
+          jsonRequest<{ latest?: ScanRun | null; attempts?: ScanAttempt[] }>(`/api/products/${product.id}/runs?limit=5`, { headers: { Accept: "application/json" } }),
+        ]);
+        setHistoryByProduct(current => ({ ...current, [product.id]: { loading: false, snapshots: history.snapshots ?? [], summaryByCurrency: history.summaryByCurrency ?? [], latestRun: runs.latest ?? null, attempts: runs.attempts ?? [], error: "" } }));
+      } catch (err) {
+        setHistoryByProduct(current => ({ ...current, [product.id]: { loading: false, snapshots: [], summaryByCurrency: [], latestRun: null, attempts: [], error: err instanceof Error ? err.message : "Price history could not be loaded." } }));
+      }
+    }));
+  }
+
+  const productGroups = useMemo(() => groupProducts(products), [products]);
+  const availableSites = useMemo(() => [...new Set(products.map(product => websiteHostname(product.websiteUrl)))].sort(), [products]);
+  const filteredGroups = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return needle ? products.filter(product => `${product.productName} ${product.ean} ${product.websiteUrl} ${product.sku}`.toLowerCase().includes(needle)) : products;
-  }, [products, query]);
+    const min = priceMin === "" ? null : Number(priceMin) * 100;
+    const max = priceMax === "" ? null : Number(priceMax) * 100;
+    return productGroups.filter(group => {
+      const matchesText = !needle || group.products.some(product => `${product.productName} ${product.ean} ${product.websiteUrl} ${product.sku}`.toLowerCase().includes(needle));
+      const matchesSite = !siteFilter || group.products.some(product => websiteHostname(product.websiteUrl) === siteFilter);
+      const matchesStock = stockFilter === "all" || group.products.some(product => stockFilter === "in" ? product.inStock === true : stockFilter === "out" ? product.inStock === false : product.inStock == null);
+      const matchesStatus = scanStatusFilter === "all" || group.products.some(product => product.status === scanStatusFilter);
+      const prices = group.products.map(product => product.priceCents).filter((price): price is number => price != null);
+      const matchesPrice = (min == null || prices.some(price => price >= min)) && (max == null || prices.some(price => price <= max));
+      const dropDetected = group.products.some(product => (product.priceCents != null && product.ownPriceCents != null && product.priceCents < product.ownPriceCents) || historyByProduct[product.id]?.summaryByCurrency.some(summary => (summary.changeCents ?? 0) < 0));
+      const attention = group.products.some(product => ["blocked", "unavailable", "needs_review", "error"].includes(product.status) || dropDetected);
+      return matchesText && matchesSite && matchesStock && matchesStatus && matchesPrice && (!priceDropsOnly || dropDetected) && (!needsAttention || attention);
+    });
+  }, [productGroups, query, siteFilter, stockFilter, scanStatusFilter, priceMin, priceMax, priceDropsOnly, needsAttention, historyByProduct]);
+  const uniqueProductCount = productGroups.length;
   const foundCount = products.filter(product => product.status === "found").length;
   const waitingCount = products.filter(product => ["queued", "searching"].includes(product.status)).length;
   const pricedCount = products.filter(product => product.priceCents != null).length;
@@ -171,6 +229,33 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     finally { setSaving(false); }
   }
 
+  function toggleGroupSelection(group: ProductGroup) {
+    setSelectedProductIds(current => {
+      const allSelected = group.products.every(product => current.includes(product.id));
+      return allSelected ? current.filter(id => !group.products.some(product => product.id === id)) : [...new Set([...current, ...group.products.map(product => product.id)])];
+    });
+  }
+
+  async function runBulkAction(action: "rescan" | "delete" | "pause" | "resume") {
+    if (!selectedProductIds.length) return;
+    if (action === "delete" && !window.confirm(`Remove ${selectedProductIds.length} selected site searches and their history?`)) return;
+    setBulkActionLoading(true); setError("");
+    try {
+      const result = await jsonRequest<{ products?: Product[]; deletedIds?: string[] }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ action, productIds: selectedProductIds }) });
+      if (action === "delete") {
+        const deleted = new Set(result.deletedIds ?? selectedProductIds);
+        setProducts(current => current.filter(product => !deleted.has(product.id)));
+      } else if (action === "rescan") {
+        const queued = result.products ?? products.filter(product => selectedProductIds.includes(product.id));
+        await scanMany(queued, setBulkProgress);
+        await refreshProducts();
+      } else if (result.products) mergeProducts(result.products);
+      setSelectedProductIds([]);
+      showToast(action === "rescan" ? "Selected products rescanned" : action === "delete" ? "Selected products removed" : action === "pause" ? "Monitoring paused" : "Monitoring resumed");
+    } catch (err) { setError(err instanceof Error ? err.message : "Bulk action failed."); }
+    finally { setBulkProgress(""); setBulkActionLoading(false); }
+  }
+
   async function removeWebsite(website: Website) {
     if (!window.confirm(`Remove ${new URL(website.url).hostname} from saved websites?`)) return;
     try {
@@ -224,19 +309,19 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     finally { if (fileRef.current) fileRef.current.value = ""; }
   }
 
-  async function exportWorkbook() {
-    if (!products.length) { showToast("Add a product before exporting"); return; }
+  async function exportWorkbook(items = products) {
+    if (!items.length) { showToast("Add a product before exporting"); return; }
     const header = ["Website URL", "Product Name", "EAN", "SKU", "Notes", "Your price", "Status", "Confidence", "Matched URL", "Result title", "Competitor price", "Currency", "In stock", "Last checked"];
     const data = [
       header.map(value => ({ value, type: String, fontWeight: "bold" as const, color: "#FFFFFF", backgroundColor: "#123F37" })),
-      ...products.map(product => [
+      ...items.map(product => [
         product.websiteUrl, product.productName, product.ean, product.sku, product.notes, product.ownPriceCents == null ? "" : product.ownPriceCents / 100,
         product.status, product.confidence ?? "", product.matchedUrl ?? "", product.resultTitle ?? "",
         product.priceCents == null ? "" : product.priceCents / 100, product.currency ?? "", product.inStock == null ? "" : product.inStock ? "Yes" : "No", product.lastCheckedAt ?? "",
       ].map((value, index) => ({ value, type: (index === 5 || index === 10) && typeof value === "number" ? Number : String }))),
     ];
     await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 12, 14, 12, 36, 30, 14, 10, 10, 22].map(width => ({ width })) });
-    showToast("Excel export downloaded");
+    showToast(`${items.length} site search${items.length === 1 ? "" : "es"} exported`);
   }
 
   async function removeProduct(product: Product) {
@@ -254,13 +339,13 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     <aside className={menu ? "sidebar open" : "sidebar"}>
       <div className="brand"><span className="logo"><Icon name="bolt" size={17}/></span><span>PriceWatch</span></div>
       <button className="mobile-close" onClick={() => setMenu(false)} aria-label="Close navigation"><Icon name="close"/></button>
-      <nav><button className="nav-item active" onClick={() => {setMenu(false);document.getElementById("search-product")?.scrollIntoView({behavior:"smooth"})}}><Icon name="search"/><span>Product search</span></button><button className="nav-item" onClick={() => {setMenu(false);document.getElementById("product-list")?.scrollIntoView({behavior:"smooth"})}}><Icon name="box"/><span>Products</span><span className="nav-count">{products.length}</span></button>{isAdmin && <button className="nav-item" onClick={() => window.location.assign("/admin")}><Icon name="settings"/><span>Admin profiles</span></button>}</nav>
+      <nav><button className="nav-item active" onClick={() => {setMenu(false);document.getElementById("search-product")?.scrollIntoView({behavior:"smooth"})}}><Icon name="search"/><span>Product search</span></button><button className="nav-item" onClick={() => {setMenu(false);document.getElementById("product-list")?.scrollIntoView({behavior:"smooth"})}}><Icon name="box"/><span>Products</span><span className="nav-count">{uniqueProductCount}</span></button>{isAdmin && <button className="nav-item" onClick={() => window.location.assign("/admin")}><Icon name="settings"/><span>Admin profiles</span></button>}</nav>
       <div className="side-bottom"><div className="plan-card"><div><span>{plan.key[0].toUpperCase() + plan.key.slice(1)} plan</span><strong>{products.length} of {planLimit.toLocaleString()}</strong></div><div className="meter"><i style={{width:`${Math.min(100, products.length / planLimit * 100)}%`}}/></div><button onClick={() => window.location.assign("/#pricing")}>Manage plan</button></div><div className="profile"><span className="avatar">{initials}</span><span className="profile-copy"><strong>{displayName}</strong><small>{email}</small></span><button className="signout-mini" onClick={signOut}>Sign out</button></div><button className="delete-workspace" onClick={deleteWorkspace}>Delete workspace data</button></div>
     </aside>
     {menu && <button className="scrim" onClick={() => setMenu(false)} aria-label="Close menu"/>}
 
     <section className="content search-content">
-      <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{plan.urlLimit.toLocaleString()} monitored searches · {plan.checksPerDay === 1 ? "daily checks" : `${plan.checksPerDay} checks/day`}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={exportWorkbook}><Icon name="download"/>Export Excel</button></div></header>
+      <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{plan.urlLimit.toLocaleString()} monitored searches · {plan.checksPerDay === 1 ? "daily checks" : `${plan.checksPerDay} checks/day`}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={() => exportWorkbook()}><Icon name="download"/>Export Excel</button></div></header>
 
       <section className="product-search-card website-card">
         <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Add websites, then select where to search</h2><p>Save each public store once. Select one or many websites for manual searches and Excel imports.</p></div></div>
@@ -290,15 +375,36 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
         <div className="responsible-note"><Icon name="bolt" size={15}/><span>Evidence-first hybrid search: AI reviews and recovers candidate URLs; EAN, price, currency, and stock are verified from the public product page.</span></div>
       </section>
 
-      <section className="search-stats"><article><span>Products</span><b>{products.length}</b><small>{Math.max(0, planLimit-products.length).toLocaleString()} plan slots left</small></article><article><span>Matches found</span><b>{foundCount}</b><small>EAN or name + price</small></article><article><span>Prices captured</span><b>{pricedCount}</b><small>Latest public results</small></article><article><span>Waiting</span><b>{waitingCount}</b><small>Queued or searching</small></article></section>
+      <section className="search-stats"><article><span>Products</span><b>{uniqueProductCount}</b><small>{products.length} site searches · {Math.max(0, planLimit-products.length).toLocaleString()} plan slots left</small></article><article><span>Matches found</span><b>{foundCount}</b><small>EAN or name + price</small></article><article><span>Prices captured</span><b>{pricedCount}</b><small>Latest public results</small></article><article><span>Waiting</span><b>{waitingCount}</b><small>Queued or searching</small></article></section>
 
       <PricingIntelligence products={products} onProductsChanged={refreshProducts}/>
 
       {error && <div className="dashboard-error" role="alert"><span>{error}</span><button onClick={() => setError("")} aria-label="Dismiss error"><Icon name="close" size={15}/></button></div>}
 
       <section className="product-list-card" id="product-list">
-        <div className="product-list-head"><div><h2>Monitored products</h2><p>Every product is tied to one website and EAN.</p></div><div className="list-actions"><label className="search"><Icon name="search" size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, EAN or site"/></label><button onClick={() => setImportOpen(true)}><Icon name="upload"/>Bulk import</button></div></div>
-        {loading ? <div className="empty-products"><span className="spinner"/><h3>Loading your products…</h3></div> : filtered.length === 0 ? <div className="empty-products"><span><Icon name="box" size={25}/></span><h3>{products.length ? "No products match this search" : "No products yet"}</h3><p>{products.length ? "Try another name, EAN, or website." : "Add one above, or import many products from Excel."}</p>{!products.length && <button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button>}</div> : <div className="monitor-table-wrap"><table className="monitor-table"><thead><tr><th>Product</th><th>Website</th><th>EAN</th><th>Result</th><th>Prices</th><th>Stock</th><th>Last checked</th><th/></tr></thead><tbody>{filtered.map(product => <tr key={product.id}><td><strong>{product.productName}</strong><small>{product.sku || "No SKU"}</small></td><td><a href={product.websiteUrl} target="_blank" rel="noreferrer">{new URL(product.websiteUrl).hostname}<Icon name="external" size={12}/></a></td><td><code>{product.ean}</code></td><td><span className={`result-badge ${product.status}`}>{product.status === "not_found" ? "Not found" : product.status}</span><small title={displayStatusMessage(product.statusMessage)}>{displayStatusMessage(product.statusMessage)}</small></td><td><strong>{product.priceCents == null ? "—" : new Intl.NumberFormat(undefined,{style:"currency",currency:product.currency || "EUR"}).format(product.priceCents/100)}</strong>{product.ownPriceCents != null && <small>Your price: {new Intl.NumberFormat(undefined,{style:"currency",currency:product.currency || "EUR"}).format(product.ownPriceCents/100)}</small>}{product.matchedUrl && <a className="match-link" href={product.matchedUrl} target="_blank" rel="noreferrer">{product.status === "found" ? "Open match" : "Open last match"}</a>}</td><td>{product.inStock == null ? "—" : <span className={product.inStock ? "stock in" : "stock out"}>{product.inStock ? "In stock" : "Out"}</span>}</td><td>{product.lastCheckedAt ? formatAppDateTime(product.lastCheckedAt) : "Never"}</td><td><div className="row-buttons"><button onClick={() => scanOne(product.id)} disabled={product.status === "searching"} title="Search again"><Icon name="refresh" size={15}/></button><button onClick={() => removeProduct(product)} title="Remove"><Icon name="trash" size={15}/></button></div></td></tr>)}</tbody></table></div>}
+        <div className="product-list-head"><div><h2>Monitored products</h2><p>Each product appears once; the site tags show everywhere it is searched.</p></div><div className="list-actions"><label className="search"><Icon name="search" size={16}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search name, EAN or site"/></label><button onClick={() => setImportOpen(true)}><Icon name="upload"/>Bulk import</button></div></div>
+        <div className="filter-bar" aria-label="Product filters"><label><span>Site</span><select value={siteFilter} onChange={event => setSiteFilter(event.target.value)}><option value="">All sites</option>{availableSites.map(site => <option key={site} value={site}>{site}</option>)}</select></label><label><span>Stock</span><select value={stockFilter} onChange={event => setStockFilter(event.target.value as typeof stockFilter)}><option value="all">All stock</option><option value="in">In stock</option><option value="out">Out of stock</option><option value="unknown">Unknown</option></select></label><label><span>Scan</span><select value={scanStatusFilter} onChange={event => setScanStatusFilter(event.target.value)}><option value="all">All statuses</option><option value="found">Found</option><option value="queued">Queued</option><option value="searching">Searching</option><option value="blocked">Blocked</option><option value="not_found">Not found</option><option value="needs_review">Needs review</option><option value="unavailable">Unavailable</option></select></label><label><span>Price from</span><input inputMode="decimal" type="number" min="0" step="0.01" value={priceMin} onChange={event => setPriceMin(event.target.value)} placeholder="0.00"/></label><label><span>Price to</span><input inputMode="decimal" type="number" min="0" step="0.01" value={priceMax} onChange={event => setPriceMax(event.target.value)} placeholder="Any"/></label><label className="attention-filter"><input type="checkbox" checked={priceDropsOnly} onChange={event => setPriceDropsOnly(event.target.checked)}/><span>Price drops</span></label><label className="attention-filter"><input type="checkbox" checked={needsAttention} onChange={event => setNeedsAttention(event.target.checked)}/><span>Needs attention</span></label></div>
+        {selectedProductIds.length > 0 && <div className="bulk-action-bar"><strong>{selectedProductIds.length} site search{selectedProductIds.length === 1 ? "" : "es"} selected</strong><div><button onClick={() => runBulkAction("rescan")} disabled={bulkActionLoading}>Rescan</button><button onClick={() => runBulkAction("pause")} disabled={bulkActionLoading}>Pause monitoring</button><button onClick={() => runBulkAction("resume")} disabled={bulkActionLoading}>Resume monitoring</button><button onClick={() => exportWorkbook(products.filter(product => selectedProductIds.includes(product.id)))} disabled={bulkActionLoading}>Export</button><button className="danger" onClick={() => runBulkAction("delete")} disabled={bulkActionLoading}>Delete</button></div></div>}
+        {loading ? <div className="empty-products"><span className="spinner"/><h3>Loading your products…</h3></div> : filteredGroups.length === 0 ? <div className="empty-products"><span><Icon name="box" size={25}/></span><h3>{products.length ? "No products match these filters" : "No products yet"}</h3><p>{products.length ? "Try another filter or clear the search." : "Add one above, or import many products from Excel."}</p>{!products.length && <button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button>}</div> : <div className="monitor-table-wrap"><table className="monitor-table"><thead><tr><th><button className="select-all-button" type="button" onClick={() => { const visibleIds = filteredGroups.flatMap(group => group.products.map(product => product.id)); const allSelected = visibleIds.every(id => selectedProductIds.includes(id)); setSelectedProductIds(current => allSelected ? current.filter(id => !visibleIds.includes(id)) : [...new Set([...current, ...visibleIds])]); }} aria-label="Select visible products">□</button> Product</th><th>Sites searched</th><th>EAN</th><th>Result</th><th>Prices</th><th>Stock</th><th>Last checked</th><th>Actions</th></tr></thead><tbody>{filteredGroups.map(group => {
+          const primary = group.primary;
+          const result = summarizeGroupResult(group.products);
+          const pricedProducts = group.products.filter(product => product.priceCents != null);
+          const knownStockProducts = group.products.filter(product => product.inStock != null);
+          const latestCheckedAt = latestProductCheck(group.products);
+          const stockLabel = knownStockProducts.length === 0 ? "—" : knownStockProducts.every(product => product.inStock) ? "In stock" : knownStockProducts.every(product => !product.inStock) ? "Out" : "Mixed";
+          const stockClass = stockLabel === "In stock" ? "in" : stockLabel === "Out" ? "out" : "";
+          const groupSelected = group.products.every(product => selectedProductIds.includes(product.id));
+          return <Fragment key={group.key}><tr>
+            <td><div className="product-cell"><input className="product-select" type="checkbox" checked={groupSelected} onChange={() => toggleGroupSelection(group)} aria-label={`Select ${primary.productName}`}/><button type="button" className={`product-row-trigger ${expandedProductKey === group.key ? "active" : ""}`} onClick={() => toggleProductHistory(group)} aria-expanded={expandedProductKey === group.key}><strong>{primary.productName}</strong><small>{primary.sku || "No SKU"}</small><span className="history-trigger-label">{expandedProductKey === group.key ? "Hide price history" : "View price history"}</span></button></div></td>
+            <td><div className="product-site-tags">{group.products.map(product => { const hostname = websiteHostname(product.websiteUrl); const destination = product.matchedUrl || product.websiteUrl; return <a className={`product-site-tag ${product.status}`} key={product.id} href={destination} target="_blank" rel="noreferrer" title={`${hostname}: ${product.matchedUrl ? "Open the verified product page" : displayStatusMessage(product.statusMessage)}`}><i className="site-tag-dot"/>{hostname}<Icon name="external" size={10}/></a>; })}</div><small>{group.products.length} website{group.products.length === 1 ? "" : "s"}</small></td>
+            <td><code>{primary.ean}</code></td>
+            <td><span className={`result-badge ${result.className}`}>{result.label}</span><small title={group.products.map(product => `${websiteHostname(product.websiteUrl)}: ${displayStatusMessage(product.statusMessage)}`).join(" · ")}>{group.products.map(product => `${websiteHostname(product.websiteUrl)}: ${displayStatusMessage(product.statusMessage)}`).join(" · ")}</small></td>
+            <td>{pricedProducts.length ? <div className="product-price-list">{pricedProducts.map(product => <a className="product-price-item" key={product.id} href={product.matchedUrl || product.websiteUrl} target="_blank" rel="noreferrer"><span>{websiteHostname(product.websiteUrl)}</span><strong>{formatProductPrice(product.priceCents, product.currency)}</strong></a>)}</div> : <strong>—</strong>}{primary.ownPriceCents != null && <small>Your price: {formatProductPrice(primary.ownPriceCents, primary.currency)}</small>}</td>
+            <td><div className="group-stock"><span className={stockClass ? `stock ${stockClass}` : "stock"}>{stockLabel}</span>{knownStockProducts.length > 1 && <small>{knownStockProducts.map(product => `${websiteHostname(product.websiteUrl)}: ${product.inStock ? "In" : "Out"}`).join(" · ")}</small>}</div></td>
+            <td>{latestCheckedAt ? formatAppDateTime(latestCheckedAt) : "Never"}<small>{group.products.length} site{group.products.length === 1 ? "" : "s"}</small></td>
+            <td><div className="group-actions">{group.products.map(product => { const hostname = websiteHostname(product.websiteUrl); return <div className="group-action" key={product.id}><span className="group-action-site" title={hostname}>{hostname}</span><div className="row-buttons"><button onClick={() => scanOne(product.id)} disabled={product.status === "searching"} title={`Search ${hostname} again`} aria-label={`Search ${primary.productName} on ${hostname} again`}><Icon name="refresh" size={15}/></button><button onClick={() => removeProduct(product)} title={`Remove from ${hostname}`} aria-label={`Remove ${primary.productName} from ${hostname}`}><Icon name="trash" size={15}/></button></div></div>; })}</div></td>
+          </tr>{expandedProductKey === group.key && <tr className="product-history-row"><td colSpan={8}><ProductHistoryPanel group={group} historyByProduct={historyByProduct} onRetry={scanOne} onProductUpdated={mergeProduct}/></td></tr>}</Fragment>;
+        })}</tbody></table></div>}
       </section>
       <footer><span><i/>Verified public-page monitoring</span><span>AI reviews results and recovers failed store searches</span></footer>
     </section>
@@ -312,10 +418,112 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   </main>;
 }
 
+function ProductHistoryPanel({ group, historyByProduct, onRetry, onProductUpdated }: { group: ProductGroup; historyByProduct: Record<string, ProductHistoryState>; onRetry: (id: string, quiet?: boolean) => Promise<Product | null>; onProductUpdated: (product: Product) => void }) {
+  const histories = group.products.map(product => ({ product, state: historyByProduct[product.id] ?? { loading: true, snapshots: [], summaryByCurrency: [], latestRun: null, attempts: [], error: "" } }));
+  const currencies = [...new Set(histories.flatMap(({ state }) => state.snapshots.map(snapshot => snapshot.currency || "EUR")))];
+  const charts = currencies.map(currency => ({
+    currency,
+    histories: histories.map(({ product, state }) => ({ product, snapshots: state.snapshots.filter(snapshot => (snapshot.currency || "EUR") === currency) })).filter(history => history.snapshots.length),
+  })).filter(chart => chart.histories.length);
+  const errors = histories.filter(({ state }) => state.error);
+  const noHistory = histories.filter(({ state }) => !state.loading && !state.error && !state.snapshots.length);
+  const loading = histories.some(({ state }) => state.loading);
+  const observations = histories.reduce((total, { state }) => total + state.snapshots.length, 0);
+  const summaries = histories.flatMap(({ product, state }) => state.summaryByCurrency.map(summary => ({ product, summary })));
+
+  return <div className="price-history-panel">
+    <div className="price-history-head">
+      <div><span className="eyebrow">PRICE HISTORY</span><h3>{group.primary.productName}</h3><p>Confirmed price observations grouped by website. Click a point to see its date and stock state.</p></div>
+      <span className="price-history-count">{observations} observation{observations === 1 ? "" : "s"}</span>
+    </div>
+    {loading && !observations && <div className="price-history-message"><span className="spinner"/><span>Loading previous prices…</span></div>}
+    {summaries.length > 0 && <div className="history-summary-grid">{summaries.map(({ product, summary }) => <article key={`${product.id}-${summary.currency}`}><strong>{websiteHostname(product.websiteUrl)}</strong><span>{summary.currency} · {summary.observations} observations</span><div><b>Current <em>{formatProductPrice(summary.latestPriceCents, summary.currency)}</em></b><b>Lowest <em>{formatProductPrice(summary.minPriceCents, summary.currency)}</em></b><b>Highest <em>{formatProductPrice(summary.maxPriceCents, summary.currency)}</em></b><b>Average <em>{formatProductPrice(summary.averagePriceCents, summary.currency)}</em></b></div><small>{summary.latestCapturedAt ? `Latest ${formatAppDateTime(summary.latestCapturedAt)}` : "No latest date"}{summary.changePercent != null ? ` · ${summary.changePercent > 0 ? "+" : ""}${summary.changePercent.toFixed(2)}% since first observation` : ""}</small></article>)}</div>}
+    {charts.map(chart => <PriceHistoryChart key={chart.currency} currency={chart.currency} histories={chart.histories}/>) }
+    {loading && observations > 0 && <p className="price-history-loading">Updating the remaining site histories…</p>}
+    {noHistory.length > 0 && <p className="price-history-no-data">No confirmed price history yet for {noHistory.map(({ product }) => websiteHostname(product.websiteUrl)).join(", ")}.</p>}
+    {errors.length > 0 && <div className="price-history-errors">{errors.map(({ product, state }) => <span key={product.id}>{websiteHostname(product.websiteUrl)}: {state.error}</span>)}</div>}
+    <div className="scan-transparency"><div className="history-subhead"><strong>Scan transparency</strong><span>Why each site has its current status</span></div>{histories.map(({ product, state }) => <article key={product.id}><div><strong>{websiteHostname(product.websiteUrl)}</strong><span className={`result-badge ${product.status}`}>{statusLabel(product.status)}</span><small>{displayStatusMessage(product.statusMessage)}{state.latestRun?.reasonCode ? ` · ${reasonLabel(state.latestRun.reasonCode)}` : ""}</small>{state.attempts.length > 0 && <details><summary>{state.attempts.length} audited attempt{state.attempts.length === 1 ? "" : "s"}</summary><span>{state.attempts.map(attempt => `${reasonLabel(attempt.reasonCode)} · ${attempt.durationMs} ms`).join(" · ")}</span></details>}</div><button type="button" onClick={() => onRetry(product.id)} disabled={product.status === "searching"}>Retry</button></article>)}</div>
+    <div className="alert-settings-list"><div className="history-subhead"><strong>Price alerts</strong><span>Email alerts use the account email when the scan detects a new threshold crossing.</span></div>{group.products.map(product => <AlertSettings key={product.id} product={product} onProductUpdated={onProductUpdated}/>)}</div>
+    {!loading && !charts.length && !errors.length && !noHistory.length && <div className="price-history-message">No previous confirmed prices are available yet.</div>}
+  </div>;
+}
+
+function AlertSettings({ product, onProductUpdated }: { product: Product; onProductUpdated: (product: Product) => void }) {
+  const [enabled, setEnabled] = useState(product.monitoringEnabled !== false);
+  const [priceDrop, setPriceDrop] = useState(product.alertOnPriceDrop !== false);
+  const [restock, setRestock] = useState(product.alertOnRestock !== false);
+  const [target, setTarget] = useState(product.alertTargetPriceCents == null ? "" : (product.alertTargetPriceCents / 100).toFixed(2));
+  const [percentage, setPercentage] = useState(product.alertDropPercentBps == null ? "" : (product.alertDropPercentBps / 100).toFixed(2));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+  async function save() {
+    setSaving(true); setMessage("");
+    try {
+      const data = await jsonRequest<{ product: Product }>(`/api/products/${product.id}`, { method: "PATCH", body: JSON.stringify({ monitoringEnabled: enabled, alertOnPriceDrop: priceDrop, alertOnRestock: restock, alertTargetPriceCents: target === "" ? null : Math.round(Number(target) * 100), alertDropPercentBps: percentage === "" ? null : Math.round(Number(percentage) * 100) }) });
+      onProductUpdated(data.product); setMessage("Saved");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not save"); }
+    finally { setSaving(false); }
+  }
+  return <article className="alert-settings"><strong>{websiteHostname(product.websiteUrl)}</strong><label><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)}/> Monitoring</label><label><input type="checkbox" checked={priceDrop} onChange={event => setPriceDrop(event.target.checked)}/> Price drops</label><label><input type="checkbox" checked={restock} onChange={event => setRestock(event.target.checked)}/> Restock</label><label><span>Target price</span><input type="number" min="0" step="0.01" value={target} onChange={event => setTarget(event.target.value)} placeholder="Optional"/></label><label><span>Drop %</span><input type="number" min="0.01" max="100" step="0.01" value={percentage} onChange={event => setPercentage(event.target.value)} placeholder="Optional"/></label><button type="button" onClick={save} disabled={saving}>{saving ? "Saving…" : message || "Save"}</button></article>;
+}
+
+type SiteHistory = { product: Product; snapshots: PriceSnapshot[] };
+const HISTORY_COLORS = ["#16866a", "#4e78c1", "#d78a43", "#a05a9d", "#d05f54", "#4c9b9b"];
+
+function PriceHistoryChart({ currency, histories }: { currency: string; histories: SiteHistory[] }) {
+  const plot = { left: 52, right: 708, top: 18, bottom: 180 };
+  const snapshots = histories.flatMap(history => history.snapshots);
+  const times = snapshots.map(snapshot => new Date(snapshot.capturedAt).getTime());
+  const prices = snapshots.map(snapshot => snapshot.priceCents);
+  const minTime = Math.min(...times);
+  const maxTime = Math.max(...times);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  const spread = maxPrice - minPrice;
+  const padding = spread > 0 ? spread * 0.12 : Math.max(maxPrice * 0.12, 100);
+  const domainMin = Math.max(0, minPrice - padding);
+  const domainMax = maxPrice + padding || 1;
+  const xFor = (time: number) => maxTime === minTime ? (plot.left + plot.right) / 2 : plot.left + ((time - minTime) / (maxTime - minTime)) * (plot.right - plot.left);
+  const yFor = (price: number) => plot.bottom - ((price - domainMin) / (domainMax - domainMin)) * (plot.bottom - plot.top);
+  const yTicks = [0, 0.5, 1].map(ratio => ({ ratio, value: domainMax - (domainMax - domainMin) * ratio }));
+
+  return <section className="price-history-chart">
+    <div className="price-history-chart-head"><strong>{currency}</strong><span>{histories.length} website{histories.length === 1 ? "" : "s"}</span></div>
+    <div className="price-history-chart-wrap">
+      <svg viewBox="0 0 760 228" role="img" aria-label={`${currency} price history for ${histories.map(history => websiteHostname(history.product.websiteUrl)).join(", ")}`}>
+        {yTicks.map(tick => <g key={tick.ratio}><line x1={plot.left} x2={plot.right} y1={yFor(tick.value)} y2={yFor(tick.value)} className="history-grid-line"/><text x={plot.left - 8} y={yFor(tick.value) + 3} textAnchor="end" className="history-axis-label">{formatProductPrice(Math.round(tick.value), currency)}</text></g>)}
+        <line x1={plot.left} x2={plot.right} y1={plot.bottom} y2={plot.bottom} className="history-axis-line"/>
+        {histories.map((history, index) => {
+          const color = HISTORY_COLORS[index % HISTORY_COLORS.length];
+          const points = [...history.snapshots].sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime()).map(snapshot => ({ snapshot, x: xFor(new Date(snapshot.capturedAt).getTime()), y: yFor(snapshot.priceCents) }));
+          const path = points.map((point, pointIndex) => `${pointIndex ? "L" : "M"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+          return <g key={history.product.id}>
+            <path d={path} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+            {points.map(point => <circle key={point.snapshot.id} cx={point.x} cy={point.y} r="4" fill="#fff" stroke={color} strokeWidth="2"><title>{`${formatProductPrice(point.snapshot.priceCents, currency)} · ${formatAppDateTime(point.snapshot.capturedAt)} · ${point.snapshot.inStock === false ? "Out of stock" : point.snapshot.inStock === true ? "In stock" : "Stock unknown"}`}</title></circle>)}
+          </g>;
+        })}
+        <text x={plot.left} y="211" className="history-axis-label">{formatHistoryDate(minTime)}</text>
+        <text x={plot.right} y="211" textAnchor="end" className="history-axis-label">{formatHistoryDate(maxTime)}</text>
+      </svg>
+    </div>
+    <div className="price-history-legend">{histories.map((history, index) => {
+      const sorted = [...history.snapshots].sort((left, right) => new Date(left.capturedAt).getTime() - new Date(right.capturedAt).getTime());
+      const first = sorted[0];
+      const latest = sorted.at(-1)!;
+      const change = latest.priceCents - first.priceCents;
+      return <div key={history.product.id}><i style={{ background: HISTORY_COLORS[index % HISTORY_COLORS.length] }}/><span><strong>{websiteHostname(history.product.websiteUrl)}</strong><small>{formatProductPrice(latest.priceCents, currency)} · {change === 0 ? "No change" : `${change > 0 ? "+" : "−"}${formatProductPrice(Math.abs(change), currency)}`}</small></span></div>;
+    })}</div>
+  </section>;
+}
+
+function formatHistoryDate(timestamp: number) {
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
+}
+
 function fairProductOrder(items: Product[]) {
   const queues = new Map<string, Product[]>();
   for (const item of items) {
-    const hostname = new URL(item.websiteUrl).hostname.toLowerCase().replace(/^www\./, "");
+    const hostname = websiteHostname(item.websiteUrl).toLowerCase();
     queues.set(hostname, [...(queues.get(hostname) ?? []), item]);
   }
   const ordered: Product[] = [];
@@ -326,6 +534,59 @@ function fairProductOrder(items: Product[]) {
     }
   }
   return ordered;
+}
+
+function groupProducts(items: Product[]): ProductGroup[] {
+  const groups = new Map<string, ProductGroup>();
+  for (const product of items) {
+    const key = productGroupKey(product);
+    const group = groups.get(key);
+    if (group) group.products.push(product);
+    else groups.set(key, { key, products: [product], primary: product });
+  }
+  return [...groups.values()];
+}
+
+function productGroupKey(product: Product) {
+  const normalizedEan = product.ean.replace(/\D/g, "");
+  return normalizedEan ? `ean:${normalizedEan}` : `name:${product.productName.trim().toLowerCase()}`;
+}
+
+function websiteHostname(url: string) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return url; }
+}
+
+function summarizeGroupResult(items: Product[]) {
+  const found = items.filter(product => product.status === "found").length;
+  const waiting = items.filter(product => ["queued", "searching"].includes(product.status)).length;
+  if (found === items.length) return { className: "found", label: `Found on ${found} site${found === 1 ? "" : "s"}` };
+  if (found > 0) return { className: "partial", label: `${found} of ${items.length} found` };
+  if (waiting === items.length) {
+    const searching = items.some(product => product.status === "searching");
+    return { className: searching ? "searching" : "queued", label: searching ? "Searching" : "Queued" };
+  }
+  const primary = items.find(product => !["queued", "searching"].includes(product.status)) ?? items[0];
+  return { className: primary.status, label: primary.status === "not_found" ? "Not found" : primary.status.replace(/_/g, " ") };
+}
+
+function statusLabel(value: string) {
+  return value === "not_found" ? "Not found" : value === "needs_review" ? "Needs review" : value === "unavailable" ? "Unavailable" : value.replaceAll("_", " ");
+}
+
+function reasonLabel(value: string) {
+  const labels: Record<string, string> = { captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required", js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", profile_drift: "Profile drift", timeout: "Timed out", robots_disallowed: "Blocked by policy", rate_limited: "Rate limited" };
+  return labels[value] || statusLabel(value);
+}
+
+function latestProductCheck(items: Product[]) {
+  return items.map(product => product.lastCheckedAt).filter((date): date is string => Boolean(date)).sort((left, right) => new Date(right).getTime() - new Date(left).getTime())[0] ?? null;
+}
+
+function formatProductPrice(priceCents: number | null, currency: string | null) {
+  if (priceCents == null) return "—";
+  if (!currency || !/^[A-Z]{3}$/.test(currency)) return `${(priceCents / 100).toLocaleString()} ${currency || "EUR"}`;
+  return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(priceCents / 100);
 }
 
 function displayStatusMessage(message: string) {

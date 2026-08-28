@@ -1,4 +1,4 @@
-import { and, asc, count, eq, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, lt, lte, or } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../db";
 import { monitoredProducts, scraperSchedules } from "../db/schema";
 import { runProductScan } from "./run-product-scan.ts";
@@ -108,6 +108,7 @@ export async function runDueScraperSchedules() {
 function scheduleFilters(ownerEmail: string, targetMode: string, selectedIds: string[], cycleStartedAt: string) {
   const filters = [
     eq(monitoredProducts.ownerEmail, ownerEmail),
+    eq(monitoredProducts.monitoringEnabled, true),
     or(isNull(monitoredProducts.lastCheckedAt), lt(monitoredProducts.lastCheckedAt, cycleStartedAt)),
   ];
   if (targetMode === "selected") filters.push(selectedProductIds(selectedIds));
@@ -115,7 +116,7 @@ function scheduleFilters(ownerEmail: string, targetMode: string, selectedIds: st
 }
 
 function selectedProductIds(ids: string[]) {
-  return sql`${monitoredProducts.id} IN (SELECT CAST(value AS TEXT) FROM json_each(${JSON.stringify(ids)}))`;
+  return inArray(monitoredProducts.id, ids);
 }
 
 function startLeaseHeartbeat(schedule: typeof scraperSchedules.$inferSelect, leaseToken: string) {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertPublicHostname, isValidGtin, validateWebsiteUrl } from "../lib/product-input.ts";
+import { assertPublicHostname, isValidGtin, validateProductMonitoringSettings, validateWebsiteUrl } from "../lib/product-input.ts";
 
 test("accepts valid public hostnames and GTIN check digits", () => {
   assert.doesNotThrow(() => assertPublicHostname("shop.example.com"));
@@ -16,4 +16,22 @@ test("rejects empty, private, reserved, and IPv4-mapped IPv6 targets", () => {
 
 test("rejects an invalid GTIN check digit", () => {
   assert.equal(isValidGtin("8806095539736"), false);
+});
+
+test("validates price alert thresholds and monitoring state", () => {
+  assert.deepEqual(validateProductMonitoringSettings({
+    monitoringEnabled: false,
+    alertOnPriceDrop: true,
+    alertOnRestock: false,
+    alertTargetPriceCents: 9999,
+    alertDropPercentBps: 1250,
+  }), {
+    monitoringEnabled: false,
+    alertOnPriceDrop: true,
+    alertOnRestock: false,
+    alertTargetPriceCents: 9999,
+    alertDropPercentBps: 1250,
+  });
+  assert.throws(() => validateProductMonitoringSettings({ alertDropPercentBps: 0 }), /between/);
+  assert.throws(() => validateProductMonitoringSettings({ alertTargetPriceCents: -1 }), /valid non-negative/);
 });

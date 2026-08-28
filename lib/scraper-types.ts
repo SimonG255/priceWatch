@@ -67,6 +67,8 @@ export type StoreExtractionProfile = {
   jsonLdCurrencyFields?: string[];
   blockPatterns?: string[];
   allowRenderedFallback?: boolean;
+  /** Optional selector for a renderer-side, explicit "accept all cookies" button. */
+  cookieConsentSelector?: string;
   siteType?: SiteType;
   timeoutMs?: number;
   maxPageBytes?: number;
@@ -169,6 +171,7 @@ export type PermittedPageRenderer = (input: {
   url: string;
   hostname: string;
   waitForSelector?: string;
+  cookieConsentSelector?: string;
   timeoutMs?: number;
   maxBytes?: number;
 }) => Promise<RenderedPage | undefined>;

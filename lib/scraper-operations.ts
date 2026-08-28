@@ -170,6 +170,8 @@ export async function completeScrapeRun(input: {
     ownPriceCents?: number | null;
     alertOnPriceDrop?: boolean;
     alertOnRestock?: boolean;
+    alertTargetPriceCents?: number | null;
+    alertDropPercentBps?: number | null;
   };
   result: ProductSearchResult;
 }) {
@@ -232,9 +234,11 @@ export async function completeScrapeRun(input: {
   }
 
   if (result.status === "found" && result.priceCents != null && result.currency && result.matchedUrl) {
-    const [previous] = await getDb().select().from(priceSnapshots)
+    const previousSnapshots = await getDb().select().from(priceSnapshots)
       .where(and(eq(priceSnapshots.ownerEmail, ownerEmail), eq(priceSnapshots.productId, product.id)))
-      .orderBy(desc(priceSnapshots.capturedAt)).limit(1);
+      .orderBy(desc(priceSnapshots.capturedAt)).limit(2);
+    const previous = previousSnapshots[0];
+    const beforePrevious = previousSnapshots[1];
     const scores = result.confidenceScores;
     await getDb()
       .insert(priceSnapshots)
@@ -259,7 +263,7 @@ export async function completeScrapeRun(input: {
         capturedAt: completedAt,
       })
       .onConflictDoNothing({ target: priceSnapshots.scanId });
-    await createCustomerAlerts({ ownerEmail, product, result, previous, detectedAt: completedAt });
+    await createCustomerAlerts({ ownerEmail, product, result, previous, beforePrevious, detectedAt: completedAt });
   }
 
   await updateProfileHealth(result, completedAt);
@@ -269,16 +273,19 @@ async function updateProfileHealth(result: ProductSearchResult, checkedAt: strin
   const profileId = result.profileHealth?.profileId ?? result.evidence?.profileId;
   if (!profileId?.startsWith("custom-")) return;
   const id = profileId.slice("custom-".length);
+  const score = result.profileHealth?.score ?? (result.status === "found" ? 100 : 40);
+  const driftStatus = result.profileHealth?.status ?? (result.status === "found" ? "healthy" : "degraded");
   await getDb()
     .update(customSearchProfiles)
     .set({
-      healthScore: result.profileHealth?.score ?? (result.status === "found" ? 100 : 40),
-      driftStatus: result.profileHealth?.status ?? (result.status === "found" ? "healthy" : "degraded"),
+      healthScore: score,
+      driftStatus,
       selectorSuggestionsJson: result.profileHealth?.selectorSuggestions
         ? JSON.stringify(result.profileHealth.selectorSuggestions)
         : null,
       lastSignatureSeenAt: result.profileHealth?.signatureMatched === false ? null : checkedAt,
       ...(result.status === "found" ? { lastSeenWorkingAt: checkedAt } : {}),
+      ...(score <= 20 || driftStatus === "drifted" ? { enabled: false } : {}),
     })
     .where(eq(customSearchProfiles.id, id));
 }
@@ -315,11 +322,16 @@ export async function listScraperDashboard() {
       : 0,
     medianResponseMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
   };
+  const lastFailures = new Map<string, typeof runs[number]>();
+  for (const run of runs) {
+    if (["blocked", "unavailable", "needs_review", "error"].includes(run.status) && !lastFailures.has(run.hostname)) lastFailures.set(run.hostname, run);
+  }
   return {
     generatedAt: new Date().toISOString(),
     summary,
     domains: domains.map(
       (domain: {
+        hostname: string;
         totalChecks: number;
         successfulChecks: number;
         notFoundChecks: number;
@@ -331,6 +343,12 @@ export async function listScraperDashboard() {
         ...domain,
         successRate: domain.totalChecks ? (domain.successfulChecks + domain.notFoundChecks) / domain.totalChecks : 0,
         averageResponseMs: domain.responseSamples ? Math.round(domain.totalResponseMs / domain.responseSamples) : null,
+        lastFailure: lastFailures.get(domain.hostname) ? {
+          status: lastFailures.get(domain.hostname)!.status,
+          reasonCode: lastFailures.get(domain.hostname)!.reasonCode,
+          message: lastFailures.get(domain.hostname)!.message,
+          startedAt: lastFailures.get(domain.hostname)!.startedAt,
+        } : null,
       }),
     ),
     profiles,
@@ -444,19 +462,52 @@ async function createCustomerAlerts(input: {
     ownPriceCents?: number | null;
     alertOnPriceDrop?: boolean;
     alertOnRestock?: boolean;
+    alertTargetPriceCents?: number | null;
+    alertDropPercentBps?: number | null;
   };
   result: ProductSearchResult;
   previous?: typeof priceSnapshots.$inferSelect;
+  beforePrevious?: typeof priceSnapshots.$inferSelect;
   detectedAt: string;
 }) {
-  const { ownerEmail, product, result, previous, detectedAt } = input;
+  const { ownerEmail, product, result, previous, beforePrevious, detectedAt } = input;
   if (result.priceCents == null || !result.currency) return;
+  const comparablePrevious = previous?.currency === result.currency ? previous : undefined;
+  const comparableBeforePrevious = beforePrevious?.currency === result.currency ? beforePrevious : undefined;
   const alerts: Array<{ type: string; message: string }> = [];
   const label = product.productName || "A monitored product";
-  if (product.alertOnPriceDrop !== false && previous && result.priceCents < previous.priceCents) {
+  if (product.alertOnPriceDrop !== false && comparablePrevious && result.priceCents < comparablePrevious.priceCents) {
     alerts.push({
       type: "price_drop",
-      message: `${label} dropped from ${money(previous.priceCents, result.currency)} to ${money(result.priceCents, result.currency)}.`,
+      message: `${label} dropped from ${money(comparablePrevious.priceCents, result.currency)} to ${money(result.priceCents, result.currency)}.`,
+    });
+  }
+  if (
+    product.alertOnPriceDrop !== false &&
+    product.alertTargetPriceCents != null &&
+    result.priceCents <= product.alertTargetPriceCents &&
+    (!comparablePrevious || comparablePrevious.priceCents > product.alertTargetPriceCents)
+  ) {
+    alerts.push({
+      type: "below_target_price",
+      message: `${label} reached your target price: ${money(result.priceCents, result.currency)} (target ${money(product.alertTargetPriceCents, result.currency)}).`,
+    });
+  }
+  const currentDropBps = comparablePrevious && comparablePrevious.priceCents > 0
+    ? Math.round(((comparablePrevious.priceCents - result.priceCents) / comparablePrevious.priceCents) * 10_000)
+    : 0;
+  const previousDropBps = comparableBeforePrevious && comparableBeforePrevious.priceCents > 0 && comparablePrevious
+    ? Math.round(((comparableBeforePrevious.priceCents - comparablePrevious.priceCents) / comparableBeforePrevious.priceCents) * 10_000)
+    : 0;
+  if (
+    product.alertOnPriceDrop !== false &&
+    product.alertDropPercentBps != null &&
+    currentDropBps >= product.alertDropPercentBps &&
+    previousDropBps < product.alertDropPercentBps
+  ) {
+    alerts.push({
+      type: "percentage_price_drop",
+      message: `${label} dropped ${(currentDropBps / 100).toFixed(2)}% to ${money(result.priceCents, result.currency)}.`,
     });
   }
   if (product.alertOnPriceDrop !== false && product.ownPriceCents != null && result.priceCents < product.ownPriceCents
@@ -478,7 +529,7 @@ async function createCustomerAlerts(input: {
       state: "open",
       dedupeKey: `${product.id}:${alert.type}:${detectedAt}`,
       message: alert.message,
-      previousValueJson: previous ? JSON.stringify({ priceCents: previous.priceCents, currency: previous.currency, inStock: previous.inStock }) : null,
+      previousValueJson: comparablePrevious ? JSON.stringify({ priceCents: comparablePrevious.priceCents, currency: comparablePrevious.currency, inStock: comparablePrevious.inStock }) : null,
       currentValueJson: JSON.stringify({ priceCents: result.priceCents, currency: result.currency, inStock: result.inStock ?? null }),
       detectedAt,
     }).onConflictDoNothing({ target: customerAlertEvents.dedupeKey }).returning();

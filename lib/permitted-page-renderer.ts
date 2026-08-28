@@ -11,7 +11,7 @@ const MAX_RENDERED_HTML_BYTES = 5_000_000;
  * CAPTCHA bypass: it is called only for opted-in profiles after ordinary HTML
  * lacks usable product data, and it never runs after a challenge or rate limit.
  */
-export const renderWithPermittedService: PermittedPageRenderer = async ({ url, hostname, waitForSelector, timeoutMs, maxBytes }) => {
+export const renderWithPermittedService: PermittedPageRenderer = async ({ url, hostname, waitForSelector, cookieConsentSelector, timeoutMs, maxBytes }) => {
   const endpoint = process.env.SCRAPER_RENDERER_URL;
   const token = process.env.SCRAPER_RENDERER_TOKEN;
   if (!endpoint || !token) return undefined;
@@ -35,7 +35,12 @@ export const renderWithPermittedService: PermittedPageRenderer = async ({ url, h
       method: "POST",
       signal: controller.signal,
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify({ url, waitForSelector: waitForSelector || undefined }),
+      body: JSON.stringify({
+        url,
+        waitForSelector: waitForSelector || undefined,
+        cookieConsentSelector: cookieConsentSelector || undefined,
+        cookieConsentAction: cookieConsentSelector ? "accept_all" : undefined,
+      }),
     });
     if (!response.ok || Number(response.headers.get("content-length") || 0) > byteBudget) return undefined;
     const raw = await readLimitedText(response, byteBudget);

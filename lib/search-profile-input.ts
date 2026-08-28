@@ -14,6 +14,7 @@ export type SearchProfileInput = {
   jsonLdCurrencyFields: string;
   blockPatterns: string;
   allowRenderedFallback: boolean;
+  cookieConsentSelector: string;
   enabled: boolean;
   siteType?: "auto" | "standard" | "slow" | "large" | "javascript" | "marketplace";
   timeoutMs?: number | null;
@@ -37,6 +38,8 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
     throw new Error("Renderer fallback must be true or false.");
   }
   const allowRenderedFallback = value.allowRenderedFallback === true;
+  const cookieConsentSelector = validateSelector(optionalText(value.cookieConsentSelector, "Cookie consent selector must be text."), "Cookie consent selector");
+  if (cookieConsentSelector && !allowRenderedFallback) throw new Error("Enable the approved renderer before configuring cookie consent.");
   const enabled = value.enabled == null ? true : value.enabled;
   const siteType = value.siteType == null ? undefined : validateSiteType(value.siteType);
   const timeoutMs = optionalInteger(value.timeoutMs, "Timeout", 3_000, 30_000);
@@ -76,7 +79,7 @@ export function validateSearchProfileInput(value: Record<string, unknown>): Sear
     label, hostname, htmlSignature, searchUrlTemplate,
     productSelector, eanSelector, priceSelector,
     jsonLdEanFields, jsonLdPriceFields, jsonLdCurrencyFields,
-    blockPatterns, allowRenderedFallback, enabled,
+    blockPatterns, allowRenderedFallback, cookieConsentSelector, enabled,
     ...(siteType ? { siteType } : {}),
     ...(value.timeoutMs != null ? { timeoutMs } : {}),
     ...(value.maxPageBytes != null ? { maxPageBytes } : {}),

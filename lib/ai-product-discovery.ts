@@ -39,7 +39,7 @@ export async function discoverProductPageUrls(input: DiscoveryInput): Promise<Ai
 
   const root = new URL(input.websiteUrl);
   try {
-    const response = await createAiResponse(apiKey, {
+    const { response, payload } = await createAiResponse(apiKey, {
       model: process.env.OPENAI_DISCOVERY_MODEL || "gpt-5.6-luna",
       reasoning: { effort: "low" },
       tools: [{ type: "web_search", filters: { allowed_domains: [root.hostname] } }],
@@ -51,7 +51,6 @@ export async function discoverProductPageUrls(input: DiscoveryInput): Promise<Ai
       input: `Find the exact public product-detail page on ${root.hostname}. Product name: ${input.productName}. EAN/GTIN: ${input.ean}. Prioritize a page that visibly contains the exact EAN. Do not use other domains and do not guess a price.`,
     });
     if (!response.ok) return { attempted: true, urls: [], error: `AI discovery returned ${response.status}.` };
-    const payload = await response.json() as unknown;
     return { attempted: true, urls: extractAiCandidateUrls(payload, root) };
   } catch (error) {
     return { attempted: true, urls: [], error: error instanceof Error && error.name === "AbortError" ? "AI discovery timed out." : "AI discovery was unavailable." };
@@ -70,7 +69,7 @@ export async function reviewAndRecoverProductPageUrls(input: ReviewInput): Promi
 
   const root = new URL(input.websiteUrl);
   try {
-    const response = await createAiResponse(apiKey, {
+    const { response, payload } = await createAiResponse(apiKey, {
       model: process.env.OPENAI_DISCOVERY_MODEL || "gpt-5.6-luna",
       reasoning: { effort: "low" },
       tools: [{ type: "web_search", filters: { allowed_domains: [root.hostname] } }],
@@ -83,7 +82,6 @@ export async function reviewAndRecoverProductPageUrls(input: ReviewInput): Promi
       input: buildReviewPrompt(input, root),
     });
     if (!response.ok) return { attempted: true, urls: [], error: `AI review returned ${response.status}.` };
-    const payload = await response.json() as unknown;
     if (!isCompletedAiResponse(payload)) return { attempted: true, urls: [], error: "AI review did not complete." };
     const decision = extractAiReviewDecision(payload, root);
     if (!decision) return { attempted: true, urls: [], error: "AI review returned an invalid response." };
@@ -130,12 +128,17 @@ async function createAiResponse(apiKey: string, body: Record<string, unknown>) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
   try {
-    return await fetch(OPENAI_RESPONSES_URL, {
+    const response = await fetch(OPENAI_RESPONSES_URL, {
       method: "POST",
       signal: controller.signal,
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    // Keep the abort signal active while the response body is consumed. Fetch
+    // resolves when headers arrive, but response.json() can still be waiting
+    // on a stalled or slow body.
+    const payload = response.ok ? await response.json() as unknown : undefined;
+    return { response, payload };
   } finally {
     clearTimeout(timer);
   }

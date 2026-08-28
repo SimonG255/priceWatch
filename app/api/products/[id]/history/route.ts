@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, lt, max, min, or } from "drizzle-orm";
+import { and, asc, avg, count, desc, eq, lt, max, min, or } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../../../db";
 import { monitoredProducts, priceSnapshots } from "../../../../../db/schema";
 import { getCurrentUserEmail } from "../../../../../lib/current-user";
@@ -38,13 +38,15 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     currency: string;
     minPriceCents: number | null;
     maxPriceCents: number | null;
+    averagePriceCents: number | string | null;
     observations: number;
   }> = (await db
     .select({
-      currency: priceSnapshots.currency,
-      minPriceCents: min(priceSnapshots.priceCents),
-      maxPriceCents: max(priceSnapshots.priceCents),
-      observations: count(),
+    currency: priceSnapshots.currency,
+    minPriceCents: min(priceSnapshots.priceCents),
+    maxPriceCents: max(priceSnapshots.priceCents),
+    averagePriceCents: avg(priceSnapshots.priceCents),
+    observations: count(),
     })
     .from(priceSnapshots)
     .where(and(...baseFilters))
@@ -52,6 +54,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     currency: string;
     minPriceCents: number | null;
     maxPriceCents: number | null;
+    averagePriceCents: number | string | null;
     observations: number;
   }>;
   const summaryByCurrency = await Promise.all(
@@ -60,13 +63,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         currency: string;
         minPriceCents: number | null;
         maxPriceCents: number | null;
+        averagePriceCents: number | string | null;
         observations: number;
       }) => {
         const currency = aggregate.currency;
         const currencyFilter = and(...baseFilters, eq(priceSnapshots.currency, currency));
-        const [[latest], [oldest]] = await Promise.all([
-          db
-            .select({ priceCents: priceSnapshots.priceCents })
+      const [[latest], [oldest]] = await Promise.all([
+        db
+            .select({ priceCents: priceSnapshots.priceCents, capturedAt: priceSnapshots.capturedAt })
             .from(priceSnapshots)
             .where(currencyFilter)
             .orderBy(desc(priceSnapshots.capturedAt), desc(priceSnapshots.id))
@@ -84,7 +88,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
           latestPriceCents != null && oldestPriceCents != null ? latestPriceCents - oldestPriceCents : null;
         return {
           ...aggregate,
+          averagePriceCents: aggregate.averagePriceCents == null ? null : Math.round(Number(aggregate.averagePriceCents)),
           latestPriceCents,
+          latestCapturedAt: latest?.capturedAt ?? null,
           changeCents,
           changePercent:
             changeCents != null && oldestPriceCents
@@ -101,6 +107,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
           minPriceCents: null,
           maxPriceCents: null,
           latestPriceCents: null,
+          averagePriceCents: null,
+          latestCapturedAt: null,
           changeCents: null,
           changePercent: null,
           observations: summaryByCurrency.reduce((total, item) => total + item.observations, 0),

@@ -55,5 +55,7 @@ function sameProductDetails(left: ProductDetailsInput, right: ProductDetailsInpu
     && left.notes === right.notes
     && left.ownPriceCents === right.ownPriceCents
     && left.alertOnPriceDrop === right.alertOnPriceDrop
-    && left.alertOnRestock === right.alertOnRestock;
+    && left.alertOnRestock === right.alertOnRestock
+    && left.alertTargetPriceCents === right.alertTargetPriceCents
+    && left.alertDropPercentBps === right.alertDropPercentBps;
 }

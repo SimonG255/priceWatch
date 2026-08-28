@@ -12,7 +12,7 @@ test("normalizes a store hostname and preserves editable profile fields", () => 
     searchUrlTemplate: "/search?q={query}",
     productSelector: "", eanSelector: "", priceSelector: "",
     jsonLdEanFields: "", jsonLdPriceFields: "", jsonLdCurrencyFields: "",
-    blockPatterns: "", allowRenderedFallback: false, enabled: false,
+    blockPatterns: "", allowRenderedFallback: false, cookieConsentSelector: "", enabled: false,
   });
 });
 
@@ -41,18 +41,20 @@ test("keeps safe per-store extraction and challenge settings", () => {
     productSelector: ".product-card", eanSelector: "[data-ean]", priceSelector: "[itemprop=price]",
     jsonLdEanFields: "barcode, product.gtin13", jsonLdPriceFields: "offers.price",
     jsonLdCurrencyFields: "offers.priceCurrency", blockPatterns: "verify you are human\nchallenge page",
-    allowRenderedFallback: true,
+    allowRenderedFallback: true, cookieConsentSelector: ".accept-all-cookies",
   });
   assert.equal(profile.productSelector, ".product-card");
   assert.equal(profile.eanSelector, "[data-ean]");
   assert.equal(profile.jsonLdEanFields, "barcode,product.gtin13");
   assert.equal(profile.blockPatterns, "verify you are human\nchallenge page");
   assert.equal(profile.allowRenderedFallback, true);
+  assert.equal(profile.cookieConsentSelector, ".accept-all-cookies");
 });
 
 test("rejects unsupported selector syntax and non-boolean renderer settings", () => {
   assert.throws(() => validateSearchProfileInput({ label: "Store", hostname: "store.example", searchUrlTemplate: "/search?q={query}", priceSelector: ".card .price" }), /simple tag/i);
   assert.throws(() => validateSearchProfileInput({ label: "Store", hostname: "store.example", searchUrlTemplate: "/search?q={query}", allowRenderedFallback: "yes" }), /renderer/i);
+  assert.throws(() => validateSearchProfileInput({ label: "Store", hostname: "store.example", searchUrlTemplate: "/search?q={query}", cookieConsentSelector: ".accept-all" }), /approved renderer/i);
 });
 
 test("allows HTML-only profiles only with a relative store-local URL", () => {

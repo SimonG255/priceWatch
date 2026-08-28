@@ -21,6 +21,7 @@ export type CustomSearchProfile = {
   jsonLdCurrencyFields?: string;
   blockPatterns?: string;
   allowRenderedFallback?: boolean;
+  cookieConsentSelector?: string;
   siteType?: StoreExtractionProfile["siteType"];
   timeoutMs?: number | null;
   maxPageBytes?: number | null;
@@ -230,6 +231,7 @@ function extractionFromCustomProfile(profile: CustomSearchProfile): StoreExtract
     jsonLdCurrencyFields: splitProfileList(profile.jsonLdCurrencyFields),
     blockPatterns: splitProfileList(profile.blockPatterns),
     allowRenderedFallback: profile.allowRenderedFallback,
+    cookieConsentSelector: profile.cookieConsentSelector,
     siteType: profile.siteType,
     timeoutMs: profile.timeoutMs ?? undefined,
     maxPageBytes: profile.maxPageBytes ?? undefined,

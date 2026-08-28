@@ -18,6 +18,7 @@ type Profile = {
   jsonLdCurrencyFields: string;
   blockPatterns: string;
   allowRenderedFallback: boolean;
+  cookieConsentSelector: string;
   enabled: boolean;
   siteType: "auto" | "standard" | "slow" | "large" | "javascript" | "marketplace";
   timeoutMs: number | null;
@@ -30,6 +31,13 @@ type Profile = {
 };
 
 type UsedWebsite = { hostname: string };
+
+type AdminDataResponse = {
+  profiles: Profile[];
+  websites: UsedWebsite[];
+  health: ScraperHealth[];
+  warnings?: string[];
+};
 
 type ScraperHealth = {
   hostname: string;
@@ -61,6 +69,15 @@ type ProfileTestResponse = {
   profileHealth: ProfileTestResponse["result"]["profileHealth"] | null;
 };
 
+type SystemHealth = {
+  checkedAt: string;
+  database: { status: string; connected: boolean; missingTables: string[]; missingColumns: string[]; error?: string };
+  migrations: { status: string; pending: string[]; applied: string[] };
+  ai: { status: string; configured: boolean };
+  renderer: { status: string; configured: boolean };
+  lastFailedScan: { hostname?: string; status?: string; reasonCode?: string; message?: string; startedAt?: string } | null;
+};
+
 const emptyProfile: ProfileForm = {
   label: "",
   hostname: "",
@@ -74,6 +91,7 @@ const emptyProfile: ProfileForm = {
   jsonLdCurrencyFields: "",
   blockPatterns: "",
   allowRenderedFallback: false,
+  cookieConsentSelector: "",
   enabled: true,
   siteType: "auto",
   timeoutMs: null,
@@ -127,15 +145,33 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
   const [testEan, setTestEan] = useState("");
   const [testResult, setTestResult] = useState<ProfileTestResponse | null>(null);
   const [testing, setTesting] = useState(false);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [systemHealthLoading, setSystemHealthLoading] = useState(false);
+
+  async function refreshSystemHealth() {
+    setSystemHealthLoading(true);
+    try {
+      setSystemHealth(await request<SystemHealth>("/api/admin/system-health", { headers: { Accept: "application/json" } }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "System health could not be loaded.");
+    } finally {
+      setSystemHealthLoading(false);
+    }
+  }
 
   useEffect(() => {
-    request<{ profiles: Profile[]; websites: UsedWebsite[]; health: ScraperHealth[] }>("/api/admin/search-profiles")
+    request<AdminDataResponse>("/api/admin/search-profiles")
       .then(data => {
         setProfiles(data.profiles);
         setWebsites(data.websites);
         setHealth(data.health);
+        setWarnings(data.warnings ?? []);
       })
       .catch(err => setError(err.message));
+    request<SystemHealth>("/api/admin/system-health", { headers: { Accept: "application/json" } })
+      .then(setSystemHealth)
+      .catch(err => setError(err instanceof Error ? err.message : "System health could not be loaded."));
   }, []);
 
   function change<K extends keyof ProfileForm>(key: K, value: ProfileForm[K]) {
@@ -162,6 +198,7 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
       jsonLdCurrencyFields: profile.jsonLdCurrencyFields,
       blockPatterns: profile.blockPatterns,
       allowRenderedFallback: profile.allowRenderedFallback,
+      cookieConsentSelector: profile.cookieConsentSelector || "",
       enabled: profile.enabled,
       siteType: profile.siteType || "auto",
       timeoutMs: profile.timeoutMs,
@@ -241,6 +278,20 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
     <header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
     <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. PriceWatch verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
 
+    {warnings.map(warning => <p className="admin-warning" role="status" key={warning}>{warning}</p>)}
+    <section className="admin-card system-health-card">
+      <div className="admin-intro system-health-head"><div><span className="editor-mode">SYSTEM HEALTH</span><h2>Setup and diagnostics</h2><p>These checks are read-only. They show whether the database schema and optional AI/renderer services are ready for scans.</p></div><button className="health-refresh" onClick={refreshSystemHealth} disabled={systemHealthLoading}>{systemHealthLoading ? "Checking…" : "Refresh checks"}</button></div>
+      {!systemHealth ? <div className="admin-empty">Loading system health…</div> : <>
+        <div className="system-health-grid">
+          <HealthCard label="Database" status={systemHealth.database.status} detail={systemHealth.database.connected ? "Connection accepted" : systemHealth.database.error || "Connection unavailable"}/>
+          <HealthCard label="Migrations" status={systemHealth.migrations.status} detail={systemHealth.migrations.pending.length ? `${systemHealth.migrations.pending.length} pending` : "Schema is up to date"}/>
+          <HealthCard label="AI review" status={systemHealth.ai.status} detail={systemHealth.ai.configured ? "OpenAI key configured" : "Optional OPENAI_API_KEY is missing"}/>
+          <HealthCard label="Renderer" status={systemHealth.renderer.status} detail={systemHealth.renderer.configured ? "Endpoint and token configured" : "Optional renderer is not configured"}/>
+        </div>
+        {(systemHealth.database.missingTables.length > 0 || systemHealth.database.missingColumns.length > 0 || systemHealth.migrations.pending.length > 0) && <div className="system-health-details"><strong>Action needed</strong><span>{systemHealth.database.missingTables.length > 0 && `Missing tables: ${systemHealth.database.missingTables.join(", ")}. `}{systemHealth.database.missingColumns.length > 0 && `Missing columns: ${systemHealth.database.missingColumns.join(", ")}. `}{systemHealth.migrations.pending.length > 0 && `Run npm run db:migrate (${systemHealth.migrations.pending.join(", ")}).`}</span></div>}
+        <div className="last-failed-scan"><strong>Last failed scan</strong>{systemHealth.lastFailedScan ? <span>{systemHealth.lastFailedScan.hostname || "Unknown site"} · {systemHealth.lastFailedScan.status || "failed"} · {systemHealth.lastFailedScan.reasonCode || "no reason code"} · {systemHealth.lastFailedScan.startedAt ? formatAppDateTime(systemHealth.lastFailedScan.startedAt) : "unknown time"}<small>{systemHealth.lastFailedScan.message || "No explanation recorded."}</small></span> : <span>No blocked, unavailable, review, or error scan has been recorded.</span>}</div>
+      </>}
+    </section>
     <ScraperOperations/>
 
     <section className="admin-card website-inventory">
@@ -278,7 +329,8 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
           <label><span>JSON-LD price fields <small>comma-separated, e.g. offers.price</small></span><input maxLength={500} value={form.jsonLdPriceFields} onChange={event => change("jsonLdPriceFields", event.target.value)} placeholder="offers.price"/></label>
           <label><span>JSON-LD currency fields <small>comma-separated, e.g. offers.priceCurrency</small></span><input maxLength={500} value={form.jsonLdCurrencyFields} onChange={event => change("jsonLdCurrencyFields", event.target.value)} placeholder="offers.priceCurrency"/></label>
           <label className="full"><span>Block or challenge markers <small>one literal phrase per line</small></span><textarea maxLength={1000} value={form.blockPatterns} onChange={event => change("blockPatterns", event.target.value)} placeholder={"challenge page\nplease verify you are human"}/></label>
-          <label className="enabled-control renderer-control"><input type="checkbox" checked={form.allowRenderedFallback} onChange={event => change("allowRenderedFallback", event.target.checked)}/><span>Allow the approved server-side renderer when normal HTML has no product data <small>Requires a separately configured permitted renderer. It is never used to bypass CAPTCHA, login, or rate limits.</small></span></label>
+          <label className="enabled-control renderer-control"><input type="checkbox" checked={form.allowRenderedFallback} onChange={event => { const enabled = event.target.checked; change("allowRenderedFallback", enabled); if (!enabled) change("cookieConsentSelector", ""); }}/><span>Allow the approved server-side renderer when normal HTML has no product data <small>Requires a separately configured permitted renderer. It is never used to bypass CAPTCHA, login, or rate limits.</small></span></label>
+          <label className="full"><span>Cookie consent button selector <small>optional; only used by the approved renderer</small></span><input maxLength={180} disabled={!form.allowRenderedFallback} value={form.cookieConsentSelector} onChange={event => change("cookieConsentSelector", event.target.value)} placeholder=".accept-all-cookies"/><small className="field-help">Use a simple selector for the site&apos;s explicit “Accept all cookies” button. The renderer must verify the button text before clicking it.</small></label>
         </div></details>
         <label className="enabled-control"><input type="checkbox" checked={form.enabled} onChange={event => change("enabled", event.target.checked)}/><span>Enabled for product searches</span></label>
         <div className="admin-form-actions"><button disabled={saving} type="submit">{saving ? "Saving…" : editingId ? "Save website changes" : "Add website profile"}</button>{editingId && <button className="cancel-edit" disabled={saving} type="button" onClick={resetForm}>Cancel</button>}</div>
@@ -292,7 +344,12 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
     </section>
 
     <section className="admin-card"><div className="admin-intro"><h2>Existing website profiles</h2><p>Update a website whenever its search route, HTML, structured data fields, or block markers change. Enabled profiles are applied before built-in routes and generic fallbacks.</p></div>
-      {!profiles.length ? <div className="admin-empty">No custom website profiles yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Name</th><th>Match</th><th>Search URL</th><th>Extraction</th><th>Status</th><th>Actions</th></tr></thead><tbody>{profiles.map(profile => <tr key={profile.id} className={profile.enabled ? "" : "profile-disabled"}><td><strong>{profile.label}</strong></td><td>{profile.hostname && <code>{profile.hostname}</code>}{profile.htmlSignature && <small title={profile.htmlSignature}>HTML: {profile.htmlSignature}</small>}</td><td><code>{profile.searchUrlTemplate}</code></td><td><small>{[profile.productSelector && "selector", profile.jsonLdEanFields && "JSON-LD", profile.blockPatterns && "block markers", profile.allowRenderedFallback && "renderer"].filter(Boolean).join(" · ") || "Automatic"}</small></td><td><span className={`profile-status ${profile.enabled ? "enabled" : "disabled"}`}>{profile.enabled ? "Enabled" : "Disabled"}</span></td><td><div className="profile-actions"><button className="edit-profile" onClick={() => editProfile(profile)}>Edit</button><button className="delete-profile" onClick={() => removeProfile(profile)}>Delete</button></div></td></tr>)}</tbody></table></div>}
+      {!profiles.length ? <div className="admin-empty">No custom website profiles yet.</div> : <div className="admin-table-wrap"><table><thead><tr><th>Name</th><th>Match</th><th>Search URL</th><th>Extraction</th><th>Status</th><th>Actions</th></tr></thead><tbody>{profiles.map(profile => <tr key={profile.id} className={profile.enabled ? "" : "profile-disabled"}><td><strong>{profile.label}</strong><small>{profile.healthScore}% health · {profile.driftStatus}</small></td><td>{profile.hostname && <code>{profile.hostname}</code>}{profile.htmlSignature && <small title={profile.htmlSignature}>HTML: {profile.htmlSignature}</small>}</td><td><code>{profile.searchUrlTemplate}</code></td><td><small>{[profile.productSelector && "selector", profile.jsonLdEanFields && "JSON-LD", profile.blockPatterns && "block markers", profile.allowRenderedFallback && "renderer", profile.cookieConsentSelector && "cookie consent"].filter(Boolean).join(" · ") || "Automatic"}</small></td><td><span className={`profile-status ${profile.enabled ? "enabled" : "disabled"}`}>{profile.enabled ? "Enabled" : "Auto-disabled / disabled"}</span>{!profile.enabled && profile.driftStatus === "drifted" && <small>Disabled after profile drift or repeated failures.</small>}</td><td><div className="profile-actions"><button className="edit-profile" onClick={() => editProfile(profile)}>Edit</button><button className="delete-profile" onClick={() => removeProfile(profile)}>Delete</button></div></td></tr>)}</tbody></table></div>}
     </section>
   </main>;
+}
+
+function HealthCard({ label, status, detail }: { label: string; status: string; detail: string }) {
+  const good = status === "healthy" || status === "up_to_date" || status === "ready" || status === "configured";
+  return <article className={`system-health-card-item ${good ? "good" : "attention"}`}><span>{label}</span><strong>{status.replaceAll("_", " ")}</strong><small>{detail}</small></article>;
 }

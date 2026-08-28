@@ -31,11 +31,17 @@ export async function POST(request: Request) {
       id: crypto.randomUUID(), ownerEmail, websiteUrl: input.websiteUrl, hostname, productName: input.productName, ean: input.ean,
       sku: input.sku ?? "", notes: input.notes ?? "", ownPriceCents: input.ownPriceCents,
       alertOnPriceDrop: input.alertOnPriceDrop, alertOnRestock: input.alertOnRestock,
+      alertTargetPriceCents: input.alertTargetPriceCents ?? null,
+      alertDropPercentBps: input.alertDropPercentBps ?? null,
+      monitoringEnabled: input.monitoringEnabled ?? true,
       status: "queued", statusMessage: "Ready to search",
     }).onConflictDoUpdate({
       target: [monitoredProducts.ownerEmail, monitoredProducts.websiteUrl, monitoredProducts.ean],
       set: { hostname, productName: input.productName, sku: input.sku ?? "", notes: input.notes ?? "", ownPriceCents: input.ownPriceCents,
         alertOnPriceDrop: input.alertOnPriceDrop, alertOnRestock: input.alertOnRestock,
+        alertTargetPriceCents: input.alertTargetPriceCents ?? null,
+        alertDropPercentBps: input.alertDropPercentBps ?? null,
+        monitoringEnabled: input.monitoringEnabled ?? true,
         status: "queued", statusMessage: "Ready to search", updatedAt: new Date().toISOString() },
     }).returning();
     await ensureDefaultSchedule(ownerEmail, plan);

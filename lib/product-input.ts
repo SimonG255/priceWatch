@@ -7,6 +7,17 @@ export type ProductInput = {
   ownPriceCents?: number | null;
   alertOnPriceDrop?: boolean;
   alertOnRestock?: boolean;
+  alertTargetPriceCents?: number | null;
+  alertDropPercentBps?: number | null;
+  monitoringEnabled?: boolean;
+};
+
+export type ProductMonitoringSettings = {
+  monitoringEnabled?: boolean;
+  alertOnPriceDrop?: boolean;
+  alertOnRestock?: boolean;
+  alertTargetPriceCents?: number | null;
+  alertDropPercentBps?: number | null;
 };
 
 export type ProductDetailsInput = Omit<ProductInput, "websiteUrl">;
@@ -34,6 +45,7 @@ export function validateProductDetails(input: ProductDetailsInput): ProductDetai
   if (!isValidGtin(ean)) throw new Error("EAN/GTIN check digit is invalid.");
   if (ownPriceCents != null && (!Number.isSafeInteger(ownPriceCents) || ownPriceCents < 0 || ownPriceCents > 1_000_000_000))
     throw new Error("Your price must be a valid non-negative amount.");
+  const monitoring = validateProductMonitoringSettings(input as Record<string, unknown>);
   return {
     productName,
     ean,
@@ -42,7 +54,34 @@ export function validateProductDetails(input: ProductDetailsInput): ProductDetai
     ownPriceCents,
     alertOnPriceDrop: input?.alertOnPriceDrop !== false,
     alertOnRestock: input?.alertOnRestock !== false,
+    ...monitoring,
   };
+}
+
+export function validateProductMonitoringSettings(input: Record<string, unknown>): ProductMonitoringSettings {
+  const settings: ProductMonitoringSettings = {};
+  if (Object.prototype.hasOwnProperty.call(input, "monitoringEnabled")) {
+    if (typeof input.monitoringEnabled !== "boolean") throw new Error("Monitoring enabled must be a boolean.");
+    settings.monitoringEnabled = input.monitoringEnabled;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "alertOnPriceDrop")) {
+    if (typeof input.alertOnPriceDrop !== "boolean") throw new Error("Price-drop alerts must be a boolean.");
+    settings.alertOnPriceDrop = input.alertOnPriceDrop;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "alertOnRestock")) {
+    if (typeof input.alertOnRestock !== "boolean") throw new Error("Restock alerts must be a boolean.");
+    settings.alertOnRestock = input.alertOnRestock;
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "alertTargetPriceCents")) {
+    settings.alertTargetPriceCents = optionalAmount(input.alertTargetPriceCents, "Alert target price");
+  }
+  if (Object.prototype.hasOwnProperty.call(input, "alertDropPercentBps")) {
+    const value = input.alertDropPercentBps == null || input.alertDropPercentBps === "" ? null : Number(input.alertDropPercentBps);
+    if (value != null && (!Number.isSafeInteger(value) || value < 1 || value > 10_000))
+      throw new Error("The percentage alert must be between 0.01% and 100%.");
+    settings.alertDropPercentBps = value;
+  }
+  return settings;
 }
 
 export function isValidGtin(value: string) {
@@ -118,4 +157,11 @@ function optionalString(value: unknown, message: string) {
   if (value == null) return "";
   if (typeof value !== "string") throw new Error(message);
   return value;
+}
+
+function optionalAmount(value: unknown, label: string) {
+  if (value == null || value === "") return null;
+  const amount = Number(value);
+  if (!Number.isSafeInteger(amount) || amount < 0 || amount > 1_000_000_000) throw new Error(`${label} must be a valid non-negative amount.`);
+  return amount;
 }

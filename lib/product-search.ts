@@ -383,6 +383,7 @@ async function searchPublicWebsiteInternal(
           url: best.canonicalUrl || best.url,
           hostname: root.hostname,
           waitForSelector: extractionProfile.productSelector || extractionProfile.priceSelector,
+          ...(extractionProfile.cookieConsentSelector ? { cookieConsentSelector: extractionProfile.cookieConsentSelector } : {}),
           ...(runtime.renderer ? {} : { timeoutMs: renderBudget.renderTimeoutMs, maxBytes: renderBudget.maxRenderedBytes }),
         };
         const rendered = await (runtime.renderer ?? renderWithPermittedService)(renderInput);

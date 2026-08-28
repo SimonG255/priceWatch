@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { renderWithPermittedService } from "../lib/permitted-page-renderer.ts";
 import { searchPublicWebsite } from "../lib/product-search.ts";
 
 const productName = "Logitech MX Master 4";
@@ -497,7 +498,7 @@ test("uses a cached sitemap URL only as a discovery hint and still verifies its 
 
 test("uses an opted-in permitted renderer when normal HTML lacks product data", async (t) => {
   const canonicalUrl = "https://shop.example/products/mx-master-4";
-  const rendererCalls: Array<{ url: string; hostname: string; waitForSelector?: string }> = [];
+  const rendererCalls: Array<{ url: string; hostname: string; waitForSelector?: string; cookieConsentSelector?: string }> = [];
   const profiles = [{
     id: "javascript-store",
     label: "JavaScript store",
@@ -506,6 +507,7 @@ test("uses an opted-in permitted renderer when normal HTML lacks product data", 
     searchUrlTemplate: "/catalog?term={query}",
     productSelector: ".product-shell",
     allowRenderedFallback: true,
+    cookieConsentSelector: ".accept-all-cookies",
   }];
   installFetchMock(t, (url) => {
     if (url === openAiUrl) return aiReviewResponse({ verdict: "confirmed", confirmedUrl: canonicalUrl, retryUrls: [], issues: [] });
@@ -522,11 +524,40 @@ test("uses an opted-in permitted renderer when normal HTML lacks product data", 
     },
   });
 
-  assert.deepEqual(rendererCalls, [{ url: storeUrl, hostname: "shop.example", waitForSelector: ".product-shell" }]);
+  assert.deepEqual(rendererCalls, [{ url: storeUrl, hostname: "shop.example", waitForSelector: ".product-shell", cookieConsentSelector: ".accept-all-cookies" }]);
   assert.equal(result.status, "found");
   assert.equal(result.matchedUrl, canonicalUrl);
   assert.equal(result.priceCents, 10990);
   assert.equal(result.evidence?.structuredExactEan, true);
+});
+
+test("passes explicit cookie consent instructions to the permitted renderer", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalEndpoint = process.env.SCRAPER_RENDERER_URL;
+  const originalToken = process.env.SCRAPER_RENDERER_TOKEN;
+  let requestBody: Record<string, unknown> | undefined;
+  process.env.SCRAPER_RENDERER_URL = "https://renderer.example/render";
+  process.env.SCRAPER_RENDERER_TOKEN = "test-token";
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify({ url: "https://shop.example/product", html: "<html></html>" }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalEndpoint == null) delete process.env.SCRAPER_RENDERER_URL;
+    else process.env.SCRAPER_RENDERER_URL = originalEndpoint;
+    if (originalToken == null) delete process.env.SCRAPER_RENDERER_TOKEN;
+    else process.env.SCRAPER_RENDERER_TOKEN = originalToken;
+  });
+
+  const rendered = await renderWithPermittedService({ url: storeUrl, hostname: "shop.example", cookieConsentSelector: ".accept-all-cookies" });
+
+  assert.equal(rendered?.url, "https://shop.example/product");
+  assert.deepEqual(requestBody, {
+    url: storeUrl,
+    cookieConsentSelector: ".accept-all-cookies",
+    cookieConsentAction: "accept_all",
+  });
 });
 
 test("never invokes a permitted renderer after a detected challenge", async (t) => {

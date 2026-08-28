@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../../db";
 import { monitoredProducts } from "../../../../db/schema";
 import { getCurrentUserEmail } from "../../../../lib/current-user";
@@ -12,10 +12,8 @@ export async function GET(request: Request) {
     return Response.json({ error: "Enter a valid EAN/GTIN to compare equivalent products." }, { status: 400 });
   const filters = [
     eq(monitoredProducts.ownerEmail, ownerEmail),
-    eq(monitoredProducts.status, "found"),
-    isNotNull(monitoredProducts.priceCents),
+    eq(monitoredProducts.ean, requestedEan),
   ];
-  filters.push(eq(monitoredProducts.ean, requestedEan));
   const products: Array<{
     id: string;
     productName: string;
@@ -27,6 +25,7 @@ export async function GET(request: Request) {
     inStock: boolean | null;
     lastCheckedAt: string | null;
     confidenceScoresJson: string | null;
+    status: string;
   }> = await getDb()
     .select()
     .from(monitoredProducts)
@@ -46,6 +45,7 @@ export async function GET(request: Request) {
         inStock: boolean | null;
         lastCheckedAt: string | null;
         confidenceScoresJson: string | null;
+        status: string;
       }) => ({
         productId: product.id,
         productName: product.productName,
@@ -53,14 +53,15 @@ export async function GET(request: Request) {
         websiteUrl: product.websiteUrl,
         hostname: new URL(product.websiteUrl).hostname.toLowerCase().replace(/^www\./, ""),
         matchedUrl: product.matchedUrl,
-        priceCents: product.priceCents!,
+        priceCents: product.priceCents,
         currency: product.currency,
         inStock: product.inStock,
         lastCheckedAt: product.lastCheckedAt,
         confidenceScores: parseJson(product.confidenceScoresJson),
+        status: product.status,
       }),
     )
-    .sort((left, right) => stockRank(right.inStock) - stockRank(left.inStock) || left.priceCents - right.priceCents);
+    .sort((left, right) => stockRank(right.inStock, right.status) - stockRank(left.inStock, left.status) || (left.priceCents ?? Infinity) - (right.priceCents ?? Infinity));
   const cheapestByCurrency = Object.fromEntries(
     [
       ...new Set(
@@ -72,10 +73,10 @@ export async function GET(request: Request) {
       const cheapest =
         offers
           .filter(
-            (offer: { currency: string | null; inStock: boolean | null; priceCents: number }) =>
-              offer.currency === currency && offer.inStock === true,
+              (offer: { currency: string | null; inStock: boolean | null; priceCents: number | null; status: string }) =>
+              offer.currency === currency && offer.status === "found" && offer.inStock === true && offer.priceCents != null,
           )
-          .sort((a: { priceCents: number }, b: { priceCents: number }) => a.priceCents - b.priceCents)[0] ?? null;
+          .sort((a: { priceCents: number | null }, b: { priceCents: number | null }) => (a.priceCents ?? Infinity) - (b.priceCents ?? Infinity))[0] ?? null;
       return [currency, cheapest];
     }),
   );
@@ -92,8 +93,8 @@ export async function GET(request: Request) {
   );
 }
 
-function stockRank(value: boolean | null) {
-  return value === true ? 2 : value == null ? 1 : 0;
+function stockRank(value: boolean | null, status: string) {
+  return status === "found" && value === true ? 2 : status === "found" && value == null ? 1 : 0;
 }
 
 function parseJson(value: string | null) {

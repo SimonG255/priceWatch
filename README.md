@@ -39,7 +39,7 @@ npm run start
 npm run audit:security
 ```
 
-After changing `db/schema.ts`, run `npm run db:generate`, inspect the generated PostgreSQL migration, and apply it with `npm run db:migrate`.
+After changing `db/schema.ts`, add an idempotent SQL file to `drizzle-postgres/` and apply it with `npm run db:migrate`. The migration runner records applied files in `public.pricewatch_schema_migrations`, takes a PostgreSQL advisory lock, and runs each migration in one transaction. The older `drizzle/` folder is retained as the SQLite verification fixture and is not used by the production Postgres runner.
 
 ## Configuration
 
@@ -59,7 +59,7 @@ Use the connection string from Supabase Dashboard → Project Settings → Datab
 http://localhost:3000/auth/callback
 ```
 
-Customer and admin email alerts use `ALERT_EMAIL_WEBHOOK_URL`. Customer payloads include `to`, `subject`, and `text`. Scraper-health Slack alerts use `SLACK_WEBHOOK_URL`. An approved JavaScript renderer can be configured with `SCRAPER_RENDERER_URL` and `SCRAPER_RENDERER_TOKEN`; its endpoint must be public HTTPS.
+Customer and admin email alerts use `ALERT_EMAIL_WEBHOOK_URL`. Customer payloads include `to`, `subject`, and `text`; configure this webhook to hand delivery to your SMTP/email provider. Users can set a target price, percentage-drop threshold, and restock notifications per site. Scraper-health Slack alerts use `SLACK_WEBHOOK_URL`. An approved JavaScript renderer can be configured with `SCRAPER_RENDERER_URL` and `SCRAPER_RENDERER_TOKEN`; its endpoint must be public HTTPS. A profile may optionally configure a simple `cookieConsentSelector` when rendered fallback is enabled. The renderer receives that selector with `cookieConsentAction: "accept_all"`; it must click only a visible same-site button whose text explicitly confirms accepting all cookies, and must never use it to bypass CAPTCHA, login, or access controls.
 
 ## Import format
 

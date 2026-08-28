@@ -9,6 +9,9 @@ const migrations = [
   "0003_familiar_hercules.sql",
   "0004_spicy_terrax.sql",
   "0005_lonely_silk_fever.sql",
+  "0006_dizzy_omega_sentinel.sql",
+  "0007_cookie_consent_selector.sql",
+  "0008_monitoring_alerts.sql",
 ];
 
 const database = new DatabaseSync(":memory:");
@@ -20,7 +23,12 @@ for (const migration of migrations) {
       (id, owner_email, website_url, product_name, ean)
       VALUES ('legacy-host', 'legacy@example.com', 'https://www.legacy-store.example/item', 'Legacy', '0000000000000')`).run();
   }
-  database.exec(readFileSync(new URL(`../drizzle/${migration}`, import.meta.url), "utf8"));
+  const migrationSql = readFileSync(new URL(`../drizzle/${migration}`, import.meta.url), "utf8");
+  database.exec(
+    migration === "0007_cookie_consent_selector.sql"
+      ? migrationSql.replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN")
+      : migrationSql,
+  );
 }
 
 const tables = new Set(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((row) => row.name));
@@ -29,13 +37,13 @@ for (const table of ["price_snapshots", "scrape_runs", "scrape_attempts", "scrap
 }
 
 const productColumns = new Set(database.prepare("PRAGMA table_info(monitored_products)").all().map((row) => row.name));
-for (const column of ["hostname", "reason_code", "failure_class", "challenge_type", "confidence_scores_json", "last_duration_ms", "last_content_hash", "last_scan_id"]) {
+for (const column of ["hostname", "reason_code", "failure_class", "challenge_type", "confidence_scores_json", "last_duration_ms", "last_content_hash", "last_scan_id", "alert_target_price_cents", "alert_drop_percent_bps", "monitoring_enabled"]) {
   assert.ok(productColumns.has(column), `Missing monitored_products.${column}`);
 }
 assert.equal(database.prepare("SELECT hostname FROM monitored_products WHERE id = 'legacy-host'").get().hostname, "legacy-store.example");
 
 const profileColumns = new Set(database.prepare("PRAGMA table_info(custom_search_profiles)").all().map((row) => row.name));
-for (const column of ["revision", "site_type", "timeout_ms", "max_page_bytes", "retry_budget", "health_score", "last_seen_working_at", "drift_status"]) {
+for (const column of ["revision", "site_type", "timeout_ms", "max_page_bytes", "retry_budget", "health_score", "last_seen_working_at", "drift_status", "cookie_consent_selector"]) {
   assert.ok(profileColumns.has(column), `Missing custom_search_profiles.${column}`);
 }
 
