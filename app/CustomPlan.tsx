@@ -17,7 +17,7 @@ export default function CustomPlan() {
     const hostingAndOperationsBase = 20;
     const monitoringAndAiAllowance = urls * 0.12;
     const marginMultiplier = 1.35;
-    return Math.max(29, Math.ceil((hostingAndOperationsBase + monitoringAndAiAllowance) * frequency.multiplier * marginMultiplier));
+    return Math.max(100, Math.ceil((hostingAndOperationsBase + monitoringAndAiAllowance) * frequency.multiplier * marginMultiplier));
   }, [urls, checks]);
   const safeUrls = Math.min(5000, Math.max(10, urls || 10));
 
