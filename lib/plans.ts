@@ -19,7 +19,7 @@ export function normalizePlanSelection(value: { plan?: string; urls?: string; ch
   if (value.plan === "custom") {
     return {
       key: "custom",
-      urlLimit: clamp(Math.round(Number(value.urls) || 250), 10, 5_000),
+      urlLimit: clamp(Math.round(Number(value.urls) || 250), 25, 5_000),
       checksPerDay: [1, 4, 12, 24].includes(Number(value.checks)) ? Number(value.checks) : 4,
     };
   }
