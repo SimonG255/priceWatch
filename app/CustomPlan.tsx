@@ -14,7 +14,10 @@ export default function CustomPlan() {
   const [checks, setChecks] = useState(4);
   const price = useMemo(() => {
     const frequency = frequencies.find((item) => item.value === checks) ?? frequencies[1];
-    return Math.max(9, Math.ceil((8 + urls * 0.08) * frequency.multiplier));
+    const hostingAndOperationsBase = 20;
+    const monitoringAndAiAllowance = urls * 0.12;
+    const marginMultiplier = 1.35;
+    return Math.max(29, Math.ceil((hostingAndOperationsBase + monitoringAndAiAllowance) * frequency.multiplier * marginMultiplier));
   }, [urls, checks]);
   const safeUrls = Math.min(5000, Math.max(10, urls || 10));
 
@@ -25,7 +28,7 @@ export default function CustomPlan() {
         <label><span>Monitored URLs</span><strong>{safeUrls.toLocaleString()}</strong><input type="range" min="10" max="5000" step="10" value={safeUrls} onChange={(event) => setUrls(Number(event.target.value))}/><input className="url-number" type="number" min="10" max="5000" step="1" value={urls} onChange={(event) => setUrls(Number(event.target.value))} aria-label="Exact number of monitored URLs"/></label>
         <label><span>Check frequency</span><select value={checks} onChange={(event) => setChecks(Number(event.target.value))}>{frequencies.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}</select></label>
       </div>
-      <div className="custom-plan-total"><span>Estimated monthly price</span><strong>€{price}<small>/month</small></strong><p>Final pricing is confirmed before billing.</p><a href={`/login?plan=custom&urls=${safeUrls}&checks=${checks}`}>Choose {safeUrls.toLocaleString()} URLs <b>→</b></a></div>
+      <div className="custom-plan-total"><span>Estimated monthly price</span><strong>€{price}<small>/month</small></strong><p>Start with a 14-day free trial. Includes hosting and a fair-use AI allowance.</p><a href={`/login?plan=custom&urls=${safeUrls}&checks=${checks}`}>Start free trial <b>→</b></a></div>
     </article>
   );
 }
