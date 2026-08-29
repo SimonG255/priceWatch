@@ -10,9 +10,9 @@ export type UserPlan = {
 };
 
 const FIXED_PLANS: Record<Exclude<UserPlan["key"], "custom">, Omit<UserPlan, "key">> = {
-  starter: { urlLimit: 25, checksPerDay: 1 },
-  business: { urlLimit: 150, checksPerDay: 4 },
-  pro: { urlLimit: 1_000, checksPerDay: 24 },
+  starter: { urlLimit: 150, checksPerDay: 1 },
+  business: { urlLimit: 350, checksPerDay: 4 },
+  pro: { urlLimit: 1_500, checksPerDay: 24 },
 };
 
 export function normalizePlanSelection(value: { plan?: string; urls?: string; checks?: string }): UserPlan | null {
