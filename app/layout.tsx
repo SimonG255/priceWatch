@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import LanguageSwitcher from "./LanguageSwitcher";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://pricewatch-monitor.simongajsek6.chatgpt.site"),
@@ -35,7 +36,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased"><LanguageSwitcher/>{children}</body>
     </html>
   );
 }
