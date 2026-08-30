@@ -267,7 +267,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   }
 
   async function deleteWorkspace() {
-    const confirmation = window.prompt("This permanently deletes every PriceWatch product, snapshot, alert, and schedule in your workspace. Type DELETE to continue.");
+    const confirmation = window.prompt("This permanently deletes every Nexus product, snapshot, alert, and schedule in your workspace. Type DELETE to continue.");
     if (confirmation !== "DELETE") return;
     try {
       await jsonRequest("/api/account", { method: "DELETE", body: JSON.stringify({ confirm: confirmation }) });
@@ -320,7 +320,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
         product.priceCents == null ? "" : product.priceCents / 100, product.currency ?? "", product.inStock == null ? "" : product.inStock ? "Yes" : "No", product.lastCheckedAt ?? "",
       ].map((value, index) => ({ value, type: (index === 5 || index === 10) && typeof value === "number" ? Number : String }))),
     ];
-    await writeXlsxFile(data, { fileName: `pricewatch-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 12, 14, 12, 36, 30, 14, 10, 10, 22].map(width => ({ width })) });
+    await writeXlsxFile(data, { fileName: `nexus-products-${new Date().toISOString().slice(0, 10)}.xlsx`, sheet: "Products", columns: [34, 30, 16, 16, 28, 12, 14, 12, 36, 30, 14, 10, 10, 22].map(width => ({ width })) });
     showToast(`${items.length} site search${items.length === 1 ? "" : "es"} exported`);
   }
 
@@ -337,7 +337,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
 
   return <main className="shell search-shell">
     <aside className={menu ? "sidebar open" : "sidebar"}>
-      <div className="brand"><span className="logo"><Icon name="bolt" size={17}/></span><span>PriceWatch</span></div>
+      <div className="brand"><span className="logo"><Icon name="bolt" size={17}/></span><span>Nexus</span></div>
       <button className="mobile-close" onClick={() => setMenu(false)} aria-label="Close navigation"><Icon name="close"/></button>
       <nav><button className="nav-item active" onClick={() => {setMenu(false);document.getElementById("search-product")?.scrollIntoView({behavior:"smooth"})}}><Icon name="search"/><span>Product search</span></button><button className="nav-item" onClick={() => {setMenu(false);document.getElementById("product-list")?.scrollIntoView({behavior:"smooth"})}}><Icon name="box"/><span>Products</span><span className="nav-count">{uniqueProductCount}</span></button>{isAdmin && <button className="nav-item" onClick={() => window.location.assign("/admin")}><Icon name="settings"/><span>Admin profiles</span></button>}</nav>
       <div className="side-bottom"><div className="plan-card"><div><span>{plan.key[0].toUpperCase() + plan.key.slice(1)} plan</span><strong>{products.length} of {planLimit.toLocaleString()}</strong></div><div className="meter"><i style={{width:`${Math.min(100, products.length / planLimit * 100)}%`}}/></div><button onClick={() => window.location.assign("/#pricing")}>Manage plan</button></div><div className="profile"><span className="avatar">{initials}</span><span className="profile-copy"><strong>{displayName}</strong><small>{email}</small></span><button className="signout-mini" onClick={signOut}>Sign out</button></div><button className="delete-workspace" onClick={deleteWorkspace}>Delete workspace data</button></div>
@@ -355,7 +355,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
       </section>
 
       <section className="product-search-card" id="search-product">
-        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">BULK PRODUCT SEARCH</span><h2>Search multiple products on multiple websites</h2><p>Add product rows below. PriceWatch creates and searches every product × selected website combination.</p></div></div>
+        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">BULK PRODUCT SEARCH</span><h2>Search multiple products on multiple websites</h2><p>Add product rows below. Nexus creates and searches every product × selected website combination.</p></div></div>
         <form className="bulk-product-form" onSubmit={addProducts}>
           <div className="selected-sites-summary"><strong>Searching on {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"}</strong><span>{selectedWebsites.length ? selectedWebsites.map(website => new URL(website.url).hostname).join(", ") : "Select at least one website above."}</span></div>
           <div className="draft-list">{productDrafts.map((draft, index) => <div className="draft-row" key={draft.id}>
@@ -369,8 +369,8 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
           <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{uniqueDraftCount} product{uniqueDraftCount === 1 ? "" : "s"} × {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"} = {combinationCount} searches</strong><small>Existing combinations are updated without creating duplicates.</small></div><button className="primary search-submit" disabled={saving || !selectedWebsites.length} type="submit"><Icon name="search"/>{bulkProgress || "Add & search combinations"}</button></div>
         </form>
         <details className="search-routing-help">
-          <summary>How PriceWatch chooses a website search URL</summary>
-          <p>PriceWatch loads the submitted website first, then checks a saved product page, known search routes, the website&apos;s public search form, and common query parameters. This ensures the latest admin search-profile signature and URL template are applied. If those do not produce a verified match, a public sitemap may locate a canonical product page, whose EAN and price are still checked from the page itself. AI then reviews the best result on that store; if it is missing or wrong, AI searches the same store for replacement pages. Every AI candidate is fetched and independently verified before its price can be saved.</p>
+          <summary>How Nexus chooses a website search URL</summary>
+          <p>Nexus loads the submitted website first, then checks a saved product page, known search routes, the website&apos;s public search form, and common query parameters. This ensures the latest admin search-profile signature and URL template are applied. If those do not produce a verified match, a public sitemap may locate a canonical product page, whose EAN and price are still checked from the page itself. AI then reviews the best result on that store; if it is missing or wrong, AI searches the same store for replacement pages. Every AI candidate is fetched and independently verified before its price can be saved.</p>
         </details>
         <div className="responsible-note"><Icon name="bolt" size={15}/><span>Evidence-first hybrid search: AI reviews and recovers candidate URLs; EAN, price, currency, and stock are verified from the public product page.</span></div>
       </section>
@@ -412,7 +412,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     {importOpen && <div className="modal-backdrop" onMouseDown={() => !importProgress && setImportOpen(false)}><div className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={event => event.stopPropagation()}>
       <button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required. Each row will be searched on the websites selected below.</p>
       <div className="import-website-picker"><div><strong>Websites to search</strong><span>{selectedWebsites.length} selected</span></div><div className="website-list selectable">{websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; })}</div></div>
-      <div className="import-steps"><span><b>1</b>Select websites</span><span><b>2</b>Fill in name and EAN</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/pricewatch-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || !selectedWebsites.length} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Select a website first")}</button><small className="import-limit">Products are saved and searched in batches of three to avoid overwhelming store websites.</small>
+      <div className="import-steps"><span><b>1</b>Select websites</span><span><b>2</b>Fill in name and EAN</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/nexus-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || !selectedWebsites.length} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Select a website first")}</button><small className="import-limit">Products are saved and searched in batches of three to avoid overwhelming store websites.</small>
     </div></div>}
     {toast && <div className="toast"><Icon name="bolt" size={17}/>{toast}</div>}
   </main>;

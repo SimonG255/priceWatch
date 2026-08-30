@@ -154,7 +154,7 @@ async function searchPublicWebsiteInternal(
         status: "blocked",
         reasonCode: "robots_disallowed",
         failureClass: "permanent",
-        message: "This domain is blocked by PriceWatch's explicit access policy.",
+        message: "This domain is blocked by Nexus's explicit access policy.",
       };
     }
     let robotsRules: ReturnType<typeof parseRobotsRules> = [];
@@ -307,7 +307,7 @@ async function searchPublicWebsiteInternal(
       status: "needs_review",
       reasonCode: "known_bad_pattern",
       failureClass: "permanent",
-      message: "Every viable candidate matched a known-bad extraction rule, so PriceWatch stopped before saving unreliable data.",
+      message: "Every viable candidate matched a known-bad extraction rule, so Nexus stopped before saving unreliable data.",
     };
     // A sitemap supplies only a canonical URL. It is deliberately a late,
     // bounded fallback and never counts as product or price evidence itself.
@@ -363,7 +363,7 @@ async function searchPublicWebsiteInternal(
       if (locallyVerified) return matchedResult(locallyVerified);
       return {
         status: "blocked",
-        message: "The website presented an access challenge or rate limit before the product and price could be verified. PriceWatch does not bypass CAPTCHAs or access controls.",
+        message: "The website presented an access challenge or rate limit before the product and price could be verified. Nexus does not bypass CAPTCHAs or access controls.",
         matchedUrl: best?.canonicalUrl || best?.url,
         title: best?.title,
         confidence: best?.confidence,
@@ -467,7 +467,7 @@ async function searchPublicWebsiteInternal(
         ? { status: "unavailable", reasonCode: configuredSearchFailure.reasonCode, message: "The configured website search is temporarily unavailable. The product was not marked absent." }
         : configuredSearchFailure.kind === "response_too_large"
           ? { status: "needs_review", reasonCode: "response_too_large", message: "The configured website search exceeded its safe page-size budget and needs a site-specific profile adjustment." }
-          : { status: "blocked", reasonCode: configuredSearchFailure.reasonCode, challengeType: configuredSearchFailure.challengeType, message: "The configured website search presented an access challenge. PriceWatch does not bypass CAPTCHAs or rate limits." };
+          : { status: "blocked", reasonCode: configuredSearchFailure.reasonCode, challengeType: configuredSearchFailure.challengeType, message: "The configured website search presented an access challenge. Nexus does not bypass CAPTCHAs or rate limits." };
     if (unavailable && pages.length === 0) return { status: "unavailable", message: "The website was temporarily unavailable during the public check." };
     if (blocked && pages.length === 0) return { status: "blocked", message: "The website blocked or rate-limited the public check." };
     if (best && (best.eanMatch || best.nameScore >= 0.65 || best.structuredProduct)) return needsReviewResult(best, extractionProfile, profileDrift);
@@ -628,7 +628,7 @@ function sitemapVerificationFailureResult(url: string, failure: PublicPageFetchE
       httpStatus: failure.httpStatus,
       retryAfterMs: failure.retryAfterMs,
       matchedUrl: url,
-      message: "The sitemap located a candidate product page, but the website presented an access challenge before its EAN and price could be verified. PriceWatch does not bypass CAPTCHAs or rate limits.",
+      message: "The sitemap located a candidate product page, but the website presented an access challenge before its EAN and price could be verified. Nexus does not bypass CAPTCHAs or rate limits.",
     };
   }
   return {
@@ -660,7 +660,7 @@ function terminalFetchFailureResult(failure: PublicPageFetchError, best?: Ranked
     contentHash: best?.contentHash,
     evidence: best ? evidenceFromMatch(best) : undefined,
     message: message ?? (isBlock
-      ? `${failure.message} PriceWatch stopped at the access challenge and does not bypass CAPTCHAs or access controls.`
+      ? `${failure.message} Nexus stopped at the access challenge and does not bypass CAPTCHAs or access controls.`
       : `${failure.message} No further requests were made during this run.`),
   };
 }
@@ -946,7 +946,7 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
           });
         }
         const headers: Record<string, string> = {
-          "User-Agent": "PriceWatch/1.0 (+public product monitor)",
+          "User-Agent": "Nexus/1.0 (+public product monitor)",
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
         };
         if (options.conditional?.pageEtag) headers["If-None-Match"] = options.conditional.pageEtag;

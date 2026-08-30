@@ -49,7 +49,7 @@ test("robots rules use the most specific agent and longest path", () => {
     Disallow: /public
     User-agent: Price
     Disallow: /catalog
-    User-agent: PriceWatch
+    User-agent: Nexus
     Disallow: /catalog
     Allow: /catalog/products
   `);

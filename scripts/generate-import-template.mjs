@@ -10,7 +10,7 @@ const rows = [
 ];
 
 await writeXlsxFile(rows, {
-  filePath: new URL("../public/pricewatch-product-import-template.xlsx", import.meta.url),
+  filePath: new URL("../public/nexus-product-import-template.xlsx", import.meta.url),
   sheet: "Products",
   columns: [{ width: 42 }, { width: 20 }],
 });

@@ -1,6 +1,6 @@
-# PriceWatch
+# Nexus
 
-PriceWatch monitors public competitor product pages, verifies products by GTIN/EAN and name, records price and stock history, and sends price-drop, below-your-price, and restock alerts.
+Nexus monitors public competitor product pages, verifies products by GTIN/EAN and name, records price and stock history, and sends price-drop, below-your-price, and restock alerts.
 
 ## What it does
 
@@ -12,7 +12,7 @@ PriceWatch monitors public competitor product pages, verifies products by GTIN/E
 - Supports Supabase email/password sessions.
 - Enforces plan URL limits and maximum checks per day on the server.
 
-PriceWatch only reads public HTTP(S) pages. It does not bypass logins, CAPTCHAs, paywalls, robots policy, or access challenges.
+Nexus only reads public HTTP(S) pages. It does not bypass logins, CAPTCHAs, paywalls, robots policy, or access challenges.
 
 ## Requirements
 
@@ -63,11 +63,11 @@ Customer and admin email alerts use `ALERT_EMAIL_WEBHOOK_URL`. Customer payloads
 
 ## Import format
 
-Download `public/pricewatch-product-import-template.xlsx` from the dashboard. `Product Name` and a valid GTIN/EAN check digit are required. `SKU`, `Notes`, and `Your Price` are optional when present. A request may create at most 250 unique product–website combinations and is also bounded by the saved server-side plan.
+Download `public/nexus-product-import-template.xlsx` from the dashboard. `Product Name` and a valid GTIN/EAN check digit are required. `SKU`, `Notes`, and `Your Price` are optional when present. A request may create at most 250 unique product–website combinations and is also bounded by the saved server-side plan.
 
 ## Persistence and hosting
 
-PriceWatch uses Supabase Postgres through Drizzle. Set `DATABASE_URL` to the Supabase connection string; `DIRECT_URL` and the legacy `SUPABASE_DB_URL` names are also accepted by the server code. Apply schema migrations with `npm run db:migrate`.
+Nexus uses Supabase Postgres through Drizzle. Set `DATABASE_URL` to the Supabase connection string; `DIRECT_URL` and the legacy `SUPABASE_DB_URL` names are also accepted by the server code. Apply schema migrations with `npm run db:migrate`.
 
 ## Security notes
 

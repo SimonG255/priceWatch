@@ -154,7 +154,7 @@ export async function runProductScan(input: {
       status: "unavailable",
       reasonCode: "network_error",
       failureClass: "temporary",
-      message: "The scan stopped unexpectedly. PriceWatch recorded the failure and will retry safely on the next run.",
+      message: "The scan stopped unexpectedly. Nexus recorded the failure and will retry safely on the next run.",
       attempts: [],
       durationMs: Date.now() - scanStartedAt,
     };

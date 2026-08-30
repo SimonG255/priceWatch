@@ -5,21 +5,21 @@ import LanguageSwitcher from "./LanguageSwitcher";
 export const metadata: Metadata = {
   metadataBase: new URL("https://pricewatch-monitor.simongajsek6.chatgpt.site"),
   title: {
-    default: "PriceWatch — Competitor price monitoring",
-    template: "%s · PriceWatch",
+    default: "Nexus — Competitor price monitoring",
+    template: "%s · Nexus",
   },
   description: "Track competitor prices and stock automatically. See every market move, protect your margins, and act from one focused dashboard.",
   openGraph: {
     type: "website",
-    title: "PriceWatch — Know when the market moves.",
+    title: "Nexus — Know when the market moves.",
     description: "Competitor price and stock monitoring for focused e-commerce teams.",
     url: "/",
-    siteName: "PriceWatch",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "PriceWatch — Know when the market moves." }],
+    siteName: "Nexus",
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "Nexus — Know when the market moves." }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "PriceWatch — Know when the market moves.",
+    title: "Nexus — Know when the market moves.",
     description: "Competitor price and stock monitoring for focused e-commerce teams.",
     images: ["/og.png"],
   },

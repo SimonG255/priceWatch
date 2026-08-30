@@ -276,7 +276,7 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
 
   return <main className="admin-page">
     <header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
-    <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. PriceWatch verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
+    <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. Nexus verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
 
     {warnings.map(warning => <p className="admin-warning" role="status" key={warning}>{warning}</p>)}
     <section className="admin-card system-health-card">

@@ -90,8 +90,8 @@ export async function ensureProductsSchema() {
 
         throw new Error(
           isAuthFailure
-            ? "PriceWatch database credentials are invalid or stale. Update DIRECT_URL/SUPABASE_DB_URL/DATABASE_URL with the current Supabase connection string from the project dashboard."
-            : "PriceWatch database migrations are not ready.",
+            ? "Nexus database credentials are invalid or stale. Update DIRECT_URL/SUPABASE_DB_URL/DATABASE_URL with the current Supabase connection string from the project dashboard."
+            : "Nexus database migrations are not ready.",
           { cause: error },
         );
       });

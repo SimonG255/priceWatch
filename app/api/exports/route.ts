@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     return new Response(JSON.stringify({ schemaVersion: 1, resource, exportedAt, rows }), {
       headers: {
         "Content-Type": "application/json; charset=utf-8",
-        "Content-Disposition": `attachment; filename="pricewatch-${resource}-${exportedAt.slice(0, 10)}.json"`,
+        "Content-Disposition": `attachment; filename="nexus-${resource}-${exportedAt.slice(0, 10)}.json"`,
         "Cache-Control": "no-store",
       },
     });
@@ -30,7 +30,7 @@ export async function GET(request: Request) {
   return new Response(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="pricewatch-${resource}-${exportedAt.slice(0, 10)}.csv"`,
+      "Content-Disposition": `attachment; filename="nexus-${resource}-${exportedAt.slice(0, 10)}.csv"`,
       "Cache-Control": "no-store",
     },
   });

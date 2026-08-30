@@ -142,7 +142,7 @@ function safeLiteralMatch(value: string, pattern: string) {
 
 export type RobotsRule = { allow: boolean; path: string };
 
-export function parseRobotsRules(robots: string, userAgent = "PriceWatch") {
+export function parseRobotsRules(robots: string, userAgent = "Nexus") {
   const groups: Array<{ agents: string[]; rules: RobotsRule[] }> = [];
   let group: { agents: string[]; rules: RobotsRule[] } | undefined;
   let hasRules = false;

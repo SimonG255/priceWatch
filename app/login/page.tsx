@@ -6,7 +6,7 @@ import { normalizePlanSelection } from "../../lib/plans";
 
 export const metadata: Metadata = {
   title: "Sign in",
-  description: "Sign in to your PriceWatch competitor monitoring workspace.",
+  description: "Sign in to your Nexus competitor monitoring workspace.",
   robots: { index: false, follow: false },
   openGraph: { images: [] },
   twitter: { images: [] },
@@ -26,21 +26,21 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
   return (
     <main className="login-page">
       <section className="login-brand">
-        <Link className="login-logo" href="/" aria-label="PriceWatch home"><span className="logo"><Bolt/></span><span>PriceWatch</span></Link>
+        <Link className="login-logo" href="/" aria-label="Nexus home"><span className="logo"><Bolt/></span><span>Nexus</span></Link>
         <div className="login-brand-copy">
           <div className="eyebrow">COMPETITIVE INTELLIGENCE, SIMPLIFIED</div>
           <h1>Know when the market moves.</h1>
           <p>Monitor competitor prices, catch stock changes, and protect your margins from one calm, focused dashboard.</p>
           <div className="login-proof"><div><b>42</b><span>URLs monitored</span></div><div><b>4×</b><span>Daily checks</span></div><div><b>€186</b><span>Potential savings</span></div></div>
         </div>
-        <p className="login-foot">© 2026 PriceWatch · Public pages only · Responsible monitoring</p>
+        <p className="login-foot">© 2026 Nexus · Public pages only · Responsible monitoring</p>
       </section>
       <section className="login-panel">
         <div className="login-card">
           <h2>Welcome back</h2>
           <p>Sign in securely to access your products, price history, and alert rules.</p>
           <AuthForm configured={isSupabaseConfigured()} returnTo={returnTo} chatGPTSignInHref={signInHref} customPlan={selectedPlan?.key === "custom" ? { urls: selectedPlan.urlLimit, checks: selectedPlan.checksPerDay } : null}/>
-          <div className="modal-note"><Bolt/>Passwords are handled by Supabase Auth and are never stored by PriceWatch.</div>
+          <div className="modal-note"><Bolt/>Passwords are handled by Supabase Auth and are never stored by Nexus.</div>
           <p className="login-help">By continuing, you agree to our <a href="/terms">Terms</a> and <a href="/privacy">Privacy Policy</a>.</p>
         </div>
       </section>

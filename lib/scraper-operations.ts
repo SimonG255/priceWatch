@@ -429,8 +429,8 @@ export async function evaluateScraperAlerts(hostname: string) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
           rule.channel === "slack"
-            ? { text: `[PriceWatch] ${message}` }
-            : { subject: `PriceWatch alert: ${hostname}`, text: message },
+            ? { text: `[Nexus] ${message}` }
+            : { subject: `Nexus alert: ${hostname}`, text: message },
         ),
         signal: AbortSignal.timeout(8_000),
       });
@@ -544,7 +544,7 @@ async function createCustomerAlerts(input: {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ to: ownerEmail, subject: `PriceWatch: ${alert.type.replaceAll("_", " ")}`, text: alert.message }),
+        body: JSON.stringify({ to: ownerEmail, subject: `Nexus: ${alert.type.replaceAll("_", " ")}`, text: alert.message }),
         signal: AbortSignal.timeout(8_000),
       });
       await getDb().update(customerAlertEvents).set(response.ok
