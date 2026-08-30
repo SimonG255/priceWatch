@@ -24,8 +24,9 @@ export const metadata: Metadata = {
     images: ["/og.png"],
   },
   icons: {
-    icon: "/favicon.svg",
-    shortcut: "/favicon.svg",
+    icon: [{ url: "/nexus-favicon.png?v=2", type: "image/png", sizes: "64x64" }],
+    shortcut: "/nexus-favicon.png?v=2",
+    apple: "/nexus-logo.png?v=2",
   },
 };
 
