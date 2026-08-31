@@ -1,33 +1,11 @@
 import { and, count, eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { monitoredProducts, scraperSchedules, userPlans } from "../db/schema";
+import { FIXED_PLANS, normalizePlanSelection, type UserPlan } from "./plan-catalog";
 import { APP_TIME_ZONE } from "./time-zone";
 
-export type UserPlan = {
-  key: "starter" | "business" | "pro" | "custom";
-  urlLimit: number;
-  checksPerDay: number;
-};
-
-const FIXED_PLANS: Record<Exclude<UserPlan["key"], "custom">, Omit<UserPlan, "key">> = {
-  starter: { urlLimit: 150, checksPerDay: 1 },
-  business: { urlLimit: 350, checksPerDay: 4 },
-  pro: { urlLimit: 1_500, checksPerDay: 24 },
-};
-
-export function normalizePlanSelection(value: { plan?: string; urls?: string; checks?: string }): UserPlan | null {
-  if (value.plan === "custom") {
-    return {
-      key: "custom",
-      urlLimit: clamp(Math.round(Number(value.urls) || 250), 25, 5_000),
-      checksPerDay: [1, 4, 12, 24].includes(Number(value.checks)) ? Number(value.checks) : 4,
-    };
-  }
-  if (value.plan === "starter" || value.plan === "business" || value.plan === "pro") {
-    return { key: value.plan, ...FIXED_PLANS[value.plan] };
-  }
-  return null;
-}
+export { normalizePlanSelection };
+export type { UserPlan };
 
 export async function getOrCreateUserPlan(ownerEmail: string, selected?: UserPlan | null): Promise<UserPlan> {
   const db = getDb();

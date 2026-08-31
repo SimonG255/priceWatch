@@ -12,7 +12,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "npm run test:scraper",
     "test:price": "node --experimental-strip-types --test tests/product-price.test.ts",
-    "test:scraper": "node --experimental-strip-types --test tests/product-price.test.ts tests/product-extraction-hardening.test.ts tests/scraper-diagnostics.test.ts tests/site-search-profiles.test.ts tests/search-profile-input.test.ts tests/ai-product-discovery.test.ts tests/product-search.test.ts tests/admin-website-inventory.test.ts tests/bulk-product-input.test.ts tests/product-input.test.ts",
+    "test:scraper": "node --experimental-strip-types --test tests/product-price.test.ts tests/product-extraction-hardening.test.ts tests/scraper-diagnostics.test.ts tests/site-search-profiles.test.ts tests/search-profile-input.test.ts tests/ai-product-discovery.test.ts tests/product-search.test.ts tests/admin-website-inventory.test.ts tests/bulk-product-input.test.ts tests/product-input.test.ts tests/plans.test.ts tests/contact-route.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/migrate-postgres.mjs",
     "audit:security": "npm audit --package-lock-only"

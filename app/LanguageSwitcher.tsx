@@ -57,6 +57,38 @@ const de: Record<string, string> = {
   "YOUR NEXT PRICE CHANGE IS COMING": "DIE NÄCHSTE PREISÄNDERUNG KOMMT", "See it before it": "Erkennen Sie sie, bevor", "costs you margin.": "sie Marge kostet.", Privacy: "Datenschutz", Terms: "Bedingungen"
 };
 
+Object.assign(sl, {
+  "50 monitored URLs": "50 spremljanih URL-jev",
+  "1,000 monitored URLs": "1.000 spremljanih URL-jev",
+  Enterprise: "Podjetje",
+  "2,500+ URLs": "2.500+ URL-jev",
+  "Contact us": "Kontaktirajte nas",
+  "CONTACT SALES": "KONTAKTIRAJTE PRODAJO",
+  "Monitoring more than 2,500 URLs?": "Spremljate veÄ kot 2.500 URL-jev?",
+  Name: "Ime",
+  "Work email": "SluÅ¾beni e-poÅ¡tni naslov",
+  Company: "Podjetje",
+  "Estimated URLs": "Ocenjeno Å¡tevilo URL-jev",
+  "What do you need?": "Kaj potrebujete?",
+  "Sendingâ€¦": "PoÅ¡iljanjeâ€¦",
+});
+
+Object.assign(de, {
+  "50 monitored URLs": "50 Ã¼berwachte URLs",
+  "1,000 monitored URLs": "1.000 Ã¼berwachte URLs",
+  Enterprise: "Enterprise",
+  "2,500+ URLs": "2.500+ URLs",
+  "Contact us": "Kontakt aufnehmen",
+  "CONTACT SALES": "VERTRIEB KONTAKTIEREN",
+  "Monitoring more than 2,500 URLs?": "Ãœberwachen Sie mehr als 2.500 URLs?",
+  Name: "Name",
+  "Work email": "GeschÃ¤ftliche E-Mail",
+  Company: "Unternehmen",
+  "Estimated URLs": "GeschÃ¤tzte URLs",
+  "What do you need?": "Was benÃ¶tigen Sie?",
+  "Sendingâ€¦": "Wird gesendetâ€¦",
+});
+
 const dictionaries = { sl, de };
 const originals = new WeakMap<Text, string>();
 
