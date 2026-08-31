@@ -48,6 +48,9 @@ export function getDb() {
   if (!globalWithDb.__pricewatch_pg || globalWithDb.__pricewatch_db_url !== connectionString) {
     globalWithDb.__pricewatch_pg = postgres(connectionString, {
       max: 1,
+      connect_timeout: 8,
+      idle_timeout: 20,
+      max_lifetime: 300,
       prepare: !usesTransactionPooler,
       ssl: "require",
     });
