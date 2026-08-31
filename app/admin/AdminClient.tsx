@@ -100,27 +100,42 @@ const emptyProfile: ProfileForm = {
 };
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json" } });
-  const responseText = await response.text();
-  let body: (T & { error?: string }) | null = null;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 20_000);
 
-  if (responseText) {
-    try {
-      body = JSON.parse(responseText) as T & { error?: string };
-    } catch {
-      if (!response.ok) {
-        const serverMessage = responseText.replace(/\s+/g, " ").trim().slice(0, 240);
-        throw new Error(`${url} failed (${response.status}): ${serverMessage || response.statusText || "Server error"}`);
+  try {
+    const headers = new Headers(options?.headers);
+    headers.set("Accept", "application/json");
+    if (options?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+    const response = await fetch(url, { ...options, headers, signal: controller.signal });
+    const responseText = await response.text();
+    let body: (T & { error?: string }) | null = null;
+
+    if (responseText) {
+      try {
+        body = JSON.parse(responseText) as T & { error?: string };
+      } catch {
+        if (!response.ok) {
+          const serverMessage = responseText.replace(/\s+/g, " ").trim().slice(0, 240);
+          throw new Error(`${url} failed (${response.status}): ${serverMessage || response.statusText || "Server error"}`);
+        }
+        throw new Error(`${url} returned an invalid response (${response.status}).`);
       }
-      throw new Error(`${url} returned an invalid response (${response.status}).`);
     }
-  }
 
-  if (!response.ok) {
-    throw new Error(body?.error || `${url} failed (${response.status} ${response.statusText || "Server error"}).`);
+    if (!response.ok) {
+      throw new Error(body?.error || `${url} failed (${response.status} ${response.statusText || "Server error"}).`);
+    }
+    if (!body) throw new Error(`${url} returned an empty response (${response.status}).`);
+    return body;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`${url} timed out after 20 seconds. Check the Vercel Production database connection and pending migrations.`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  if (!body) throw new Error(`${url} returned an empty response (${response.status}).`);
-  return body;
 }
 
 function normalizedHostname(value: string) {
