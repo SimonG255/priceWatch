@@ -30,7 +30,6 @@ export async function GET() {
       savedWebsites: savedWebsitesResult.status === "rejected" ? savedWebsitesResult.reason : undefined,
       productWebsites: productWebsitesResult.status === "rejected" ? productWebsitesResult.reason : undefined,
     });
-    return Response.json({ error: "Customer website inventory could not be loaded." }, { status: 500 });
   }
   if (profilesResult.status === "rejected") {
     console.error("Admin website profiles could not be loaded.", profilesResult.reason);
@@ -43,11 +42,14 @@ export async function GET() {
     );
   }
   const profiles = profilesResult.value;
-  const savedWebsites = savedWebsitesResult.value;
-  const productWebsites = productWebsitesResult.value;
+  const savedWebsites = savedWebsitesResult.status === "fulfilled" ? savedWebsitesResult.value : [];
+  const productWebsites = productWebsitesResult.status === "fulfilled" ? productWebsitesResult.value : [];
   const health = healthResult.status === "fulfilled" ? healthResult.value : [];
   const websites = listAdminWebsiteInventory([...savedWebsites, ...productWebsites]);
   const warnings = [
+    ...(savedWebsitesResult.status === "rejected" || productWebsitesResult.status === "rejected"
+      ? ["Customer website inventory is temporarily unavailable. Custom website profiles are still available below."]
+      : []),
     ...(healthResult.status === "rejected" ? ["Scraper health is temporarily unavailable."] : []),
   ];
   if (healthResult.status === "rejected") {
