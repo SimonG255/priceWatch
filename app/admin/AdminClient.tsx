@@ -101,8 +101,25 @@ const emptyProfile: ProfileForm = {
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json" } });
-  const body = await response.json() as T & { error?: string };
-  if (!response.ok) throw new Error(body.error || "Request failed.");
+  const responseText = await response.text();
+  let body: (T & { error?: string }) | null = null;
+
+  if (responseText) {
+    try {
+      body = JSON.parse(responseText) as T & { error?: string };
+    } catch {
+      if (!response.ok) {
+        const serverMessage = responseText.replace(/\s+/g, " ").trim().slice(0, 240);
+        throw new Error(`${url} failed (${response.status}): ${serverMessage || response.statusText || "Server error"}`);
+      }
+      throw new Error(`${url} returned an invalid response (${response.status}).`);
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(body?.error || `${url} failed (${response.status} ${response.statusText || "Server error"}).`);
+  }
+  if (!body) throw new Error(`${url} returned an empty response (${response.status}).`);
   return body;
 }
 
