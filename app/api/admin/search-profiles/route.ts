@@ -19,11 +19,20 @@ export async function GET() {
     );
   }
   const db = getDb();
-  const [profilesResult, savedWebsitesResult, productWebsitesResult, healthResult] = await Promise.allSettled([
+  // The serverless pool deliberately uses one connection. Run these reads in
+  // sequence so a query's deadline starts when it can actually use that
+  // connection instead of expiring while queued behind another read.
+  const [profilesResult] = await Promise.allSettled([
     withDatabaseDeadline(db.select().from(customSearchProfiles).orderBy(desc(customSearchProfiles.createdAt)), "Profile query"),
-    withDatabaseDeadline(db.select({ url: monitoredWebsites.url }).from(monitoredWebsites), "Website query"),
-    withDatabaseDeadline(db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts), "Product website query"),
-    withDatabaseDeadline(listScraperDomainHealth(), "Scraper health query"),
+  ]);
+  const [savedWebsitesResult] = await Promise.allSettled([
+    withDatabaseDeadline(db.select({ url: monitoredWebsites.url }).from(monitoredWebsites), "Website query", 2_000),
+  ]);
+  const [productWebsitesResult] = await Promise.allSettled([
+    withDatabaseDeadline(db.select({ url: monitoredProducts.websiteUrl }).from(monitoredProducts), "Product website query", 2_000),
+  ]);
+  const [healthResult] = await Promise.allSettled([
+    withDatabaseDeadline(listScraperDomainHealth(), "Scraper health query", 2_000),
   ]);
   if (savedWebsitesResult.status === "rejected" || productWebsitesResult.status === "rejected") {
     console.error("Admin website inventory could not be loaded.", {
