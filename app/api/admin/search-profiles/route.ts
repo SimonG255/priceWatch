@@ -23,20 +23,21 @@ export async function GET() {
     });
     return Response.json({ error: "Customer website inventory could not be loaded." }, { status: 500 });
   }
-  const profiles = profilesResult.status === "fulfilled" ? profilesResult.value : [];
+  if (profilesResult.status === "rejected") {
+    console.error("Admin website profiles could not be loaded.", profilesResult.reason);
+    return Response.json(
+      { error: "Website profiles could not be loaded. Apply the latest database migrations, then reload the admin tab." },
+      { status: 500, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const profiles = profilesResult.value;
   const savedWebsites = savedWebsitesResult.value;
   const productWebsites = productWebsitesResult.value;
   const health = healthResult.status === "fulfilled" ? healthResult.value : [];
   const websites = listAdminWebsiteInventory([...savedWebsites, ...productWebsites]);
   const warnings = [
-    ...(profilesResult.status === "rejected"
-      ? ["Website profiles could not be loaded. Apply the latest database migrations, then reload the admin tab."]
-      : []),
     ...(healthResult.status === "rejected" ? ["Scraper health is temporarily unavailable."] : []),
   ];
-  if (profilesResult.status === "rejected") {
-    console.error("Admin website profiles could not be loaded.", profilesResult.reason);
-  }
   if (healthResult.status === "rejected") {
     console.error("Admin scraper health could not be loaded.", healthResult.reason);
   }

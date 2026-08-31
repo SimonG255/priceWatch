@@ -10,12 +10,21 @@ const REQUIRED_TABLES = [
 
 const REQUIRED_COLUMNS: Record<string, string[]> = {
   monitored_products: ["alert_target_price_cents", "alert_drop_percent_bps", "monitoring_enabled", "last_scan_id"],
-  custom_search_profiles: ["cookie_consent_selector"],
+  custom_search_profiles: [
+    "product_selector", "ean_selector", "price_selector", "json_ld_ean_fields",
+    "json_ld_price_fields", "json_ld_currency_fields", "block_patterns", "allow_rendered_fallback",
+    "cookie_consent_selector", "revision", "site_type", "timeout_ms", "max_page_bytes", "retry_budget",
+    "health_score", "last_seen_working_at", "last_signature_seen_at", "drift_status", "selector_suggestions_json",
+  ],
   scrape_runs: ["status", "reason_code", "started_at", "completed_at"],
   price_snapshots: ["product_id", "price_cents", "currency", "in_stock", "captured_at"],
 };
 
-const MIGRATIONS = ["0007_cookie_consent_selector.sql", "0008_monitoring_alerts.sql"];
+const MIGRATIONS = [
+  "0007_cookie_consent_selector.sql",
+  "0008_monitoring_alerts.sql",
+  "0010_search_profile_admin_columns.sql",
+];
 
 export type SystemHealth = Awaited<ReturnType<typeof getSystemHealth>>;
 
