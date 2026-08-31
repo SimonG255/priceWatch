@@ -3,6 +3,7 @@ import { extractProductMatch } from "./product-extraction.ts";
 import { buildSearchCandidates, resolveStoreExtractionProfile, sameStoreHostname, type CustomSearchProfile } from "./site-search-profiles.ts";
 import { reviewAndRecoverProductPageUrls } from "./ai-product-discovery.ts";
 import { renderWithPermittedService } from "./permitted-page-renderer.ts";
+import { createScraperNetwork, type ScraperNetwork } from "./scraper-network.ts";
 import {
   contentFingerprint,
   detectAccessChallenge,
@@ -74,6 +75,7 @@ export type SearchRuntimeOptions = {
   onlyProfile?: boolean;
   onAttempt?: (attempt: ScraperAttempt) => void | Promise<void>;
   domainProfile?: StoreExtractionProfile;
+  network?: ScraperNetwork;
 };
 
 type QueueItem = { url: string; profileId: string; profileLabel: string; conditional?: boolean };
@@ -121,8 +123,10 @@ export async function searchPublicWebsite(
 ): Promise<ProductSearchResult> {
   const startedAt = Date.now();
   const attempts: ScraperAttempt[] = [];
+  const network = runtime.network ?? createScraperNetwork();
   const result = await searchPublicWebsiteInternal(websiteUrl, productName, ean, customProfiles, preferredUrl, {
     ...runtime,
+    network,
     onAttempt: async (attempt) => {
       attempts.push(attempt);
       await runtime.onAttempt?.(attempt);
@@ -169,6 +173,7 @@ async function searchPublicWebsiteInternal(
           profileLabel: "robots.txt policy",
           reserveRequest: runtime.reserveRequest,
           onAttempt: runtime.onAttempt,
+          network: runtime.network,
         });
         robotsText = robotsPage.html;
         robotsRules = parseRobotsRules(robotsPage.html);
@@ -245,6 +250,7 @@ async function searchPublicWebsiteInternal(
           profileId: candidate.profileId,
           profileLabel: candidate.profileLabel,
           onAttempt: runtime.onAttempt,
+          network: runtime.network,
         });
         if (fetched.notModified) {
           const unchanged = candidate.conditional ? notModifiedResult(runtime.previous, candidate.url) : undefined;
@@ -316,7 +322,7 @@ async function searchPublicWebsiteInternal(
       && !(unavailable && pages.length === 0)
       && (!isTrgovineJager(root.hostname) || Boolean(configuredSearchFailure));
     if (canUseSitemap) {
-      const sitemapCandidate = await findSitemapProductUrl(root, productName, ean, runtime.sitemapCache, extractionProfile?.blockPatterns, runtime.reserveRequest, runtime.onAttempt, runtime.knownBadPatterns, robotsText, retryState);
+      const sitemapCandidate = await findSitemapProductUrl(root, productName, ean, runtime.sitemapCache, extractionProfile?.blockPatterns, runtime.reserveRequest, runtime.onAttempt, runtime.knownBadPatterns, robotsText, retryState, runtime.network);
       const sitemapProductUrl = sitemapCandidate?.url;
       const previousSitemapFailure = sitemapProductUrl ? pageFailures.get(sitemapProductUrl) : undefined;
       if (sitemapProductUrl && previousSitemapFailure) return sitemapVerificationFailureResult(sitemapProductUrl, previousSitemapFailure);
@@ -329,6 +335,7 @@ async function searchPublicWebsiteInternal(
             blockPatterns: extractionProfile?.blockPatterns, reserveRequest: runtime.reserveRequest,
             knownBadPatterns: runtime.knownBadPatterns, profileId: "sitemap", profileLabel: "the website's public sitemap",
             onAttempt: runtime.onAttempt,
+            network: runtime.network,
           });
           if (!fetched.notModified) {
             pages.push({ ...fetched, profileId: "sitemap", profileLabel: "the website's public sitemap" });
@@ -449,6 +456,7 @@ async function searchPublicWebsiteInternal(
           blockPatterns: extractionProfile?.blockPatterns, reserveRequest: runtime.reserveRequest,
           knownBadPatterns: runtime.knownBadPatterns, profileId: "ai-recovery", profileLabel: "AI-assisted discovery",
           onAttempt: runtime.onAttempt,
+          network: runtime.network,
         });
         if (fetched.notModified) continue;
         const result = extractProductMatch(fetched.html, fetched.url, productName, ean, extractionProfile);
@@ -681,6 +689,7 @@ async function findSitemapProductUrl(
   knownBadPatterns: KnownBadPattern[] | undefined,
   robotsText?: string,
   retryState?: { remaining: number },
+  network?: ScraperNetwork,
 ): Promise<SitemapProductCandidate | undefined> {
   const cached = await cache?.get({ hostname: root.hostname, ean });
   if (cached) {
@@ -713,6 +722,7 @@ async function findSitemapProductUrl(
       profileId: "robots",
       profileLabel: "robots.txt sitemap discovery",
       onAttempt,
+      network,
     });
     for (const match of robots.html.matchAll(/^\s*sitemap:\s*(\S+)\s*$/gim)) enqueue(match[1]);
   } catch {
@@ -741,6 +751,7 @@ async function findSitemapProductUrl(
         profileId: "sitemap-index",
         profileLabel: "the website's public sitemap",
         onAttempt,
+        network,
       });
       const locations = extractSitemapLocations(page.html, root);
       const productUrl = pickSitemapProductUrl(locations, productName, ean);
@@ -918,6 +929,7 @@ type FetchPublicPageOptions = {
   profileId?: string;
   profileLabel?: string;
   onAttempt?: (attempt: ScraperAttempt) => void | Promise<void>;
+  network?: ScraperNetwork;
 };
 
 async function fetchPublicPage(input: string, originalHostname: string, options: FetchPublicPageOptions): Promise<FetchedPage> {
@@ -945,13 +957,20 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
             retryAfterMs: reservation.retryAt ? Math.max(0, Date.parse(reservation.retryAt) - Date.now()) : undefined,
           });
         }
+        const identity = options.network?.next();
         const headers: Record<string, string> = {
-          "User-Agent": "Nexus/1.0 (+public product monitor)",
+          "User-Agent": identity?.userAgent ?? "Nexus/1.0 (+public product monitor)",
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
         };
         if (options.conditional?.pageEtag) headers["If-None-Match"] = options.conditional.pageEtag;
         if (options.conditional?.pageLastModified) headers["If-Modified-Since"] = options.conditional.pageLastModified;
-        const response = await fetch(current, { redirect: "manual", signal: controller.signal, headers });
+        const requestInit: RequestInit & { dispatcher?: ReturnType<ScraperNetwork["next"]>["dispatcher"] } = {
+          redirect: "manual",
+          signal: controller.signal,
+          headers,
+          ...(identity?.dispatcher ? { dispatcher: identity.dispatcher } : {}),
+        };
+        const response = await fetch(current, requestInit);
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           const location = response.headers.get("location");
           if (!location) throw new Error("Website redirect was incomplete.");

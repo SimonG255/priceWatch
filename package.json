@@ -12,7 +12,7 @@
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "npm run test:scraper",
     "test:price": "node --experimental-strip-types --test tests/product-price.test.ts",
-    "test:scraper": "node --experimental-strip-types --test tests/product-price.test.ts tests/product-extraction-hardening.test.ts tests/scraper-diagnostics.test.ts tests/site-search-profiles.test.ts tests/search-profile-input.test.ts tests/ai-product-discovery.test.ts tests/product-search.test.ts tests/admin-website-inventory.test.ts tests/bulk-product-input.test.ts tests/product-input.test.ts tests/plans.test.ts tests/contact-route.test.ts",
+    "test:scraper": "node --experimental-strip-types --test tests/product-price.test.ts tests/product-extraction-hardening.test.ts tests/scraper-diagnostics.test.ts tests/scraper-network.test.ts tests/site-search-profiles.test.ts tests/search-profile-input.test.ts tests/ai-product-discovery.test.ts tests/product-search.test.ts tests/admin-website-inventory.test.ts tests/bulk-product-input.test.ts tests/product-input.test.ts tests/plans.test.ts tests/contact-route.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node scripts/migrate-postgres.mjs",
     "audit:security": "npm audit --package-lock-only"
@@ -26,6 +26,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "read-excel-file": "6.0.1",
+    "undici": "7.21.0",
     "write-excel-file": "2.3.10"
   },
   "devDependencies": {
