@@ -71,6 +71,9 @@ Object.assign(sl, {
   "Estimated URLs": "Ocenjeno Å¡tevilo URL-jev",
   "What do you need?": "Kaj potrebujete?",
   "Sendingâ€¦": "PoÅ¡iljanjeâ€¦",
+  "/month, excl. VAT": "/mesec, brez DDV",
+  "14-day free trial. No credit card required.": "14-dnevni brezplaÄni preizkus. Kreditna kartica ni potrebna.",
+  "Prices shown exclude applicable taxes. VAT is calculated at checkout based on your location and tax status.": "Prikazane cene ne vkljuÄujejo veljavnih davkov. DDV se ob plaÄilu izraÄuna glede na vaÅ¡o lokacijo in davÄni status.",
 });
 
 Object.assign(de, {
@@ -87,6 +90,9 @@ Object.assign(de, {
   "Estimated URLs": "GeschÃ¤tzte URLs",
   "What do you need?": "Was benÃ¶tigen Sie?",
   "Sendingâ€¦": "Wird gesendetâ€¦",
+  "/month, excl. VAT": "/Monat, zzgl. MwSt.",
+  "14-day free trial. No credit card required.": "14 Tage kostenlos testen. Keine Kreditkarte erforderlich.",
+  "Prices shown exclude applicable taxes. VAT is calculated at checkout based on your location and tax status.": "Die angezeigten Preise verstehen sich zuzÃ¼glich anwendbarer Steuern. Die Mehrwertsteuer wird beim Checkout anhand Ihres Standorts und Steuerstatus berechnet.",
 });
 
 const dictionaries = { sl, de };
