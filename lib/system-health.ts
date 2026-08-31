@@ -10,12 +10,13 @@ const REQUIRED_TABLES = [
 
 const REQUIRED_COLUMNS: Record<string, string[]> = {
   monitored_products: ["alert_target_price_cents", "alert_drop_percent_bps", "monitoring_enabled", "last_scan_id"],
+  user_plans: ["subscription_status", "trial_ends_at", "subscription_expires_at"],
   custom_search_profiles: ["cookie_consent_selector"],
   scrape_runs: ["status", "reason_code", "started_at", "completed_at"],
   price_snapshots: ["product_id", "price_cents", "currency", "in_stock", "captured_at"],
 };
 
-const MIGRATIONS = ["0007_cookie_consent_selector.sql", "0008_monitoring_alerts.sql"];
+const MIGRATIONS = ["0007_cookie_consent_selector.sql", "0008_monitoring_alerts.sql", "0009_super_admin_subscriptions.sql"];
 
 export type SystemHealth = Awaited<ReturnType<typeof getSystemHealth>>;
 

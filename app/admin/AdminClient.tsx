@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import ScraperOperations from "./ScraperOperations";
+import SuperAdminPanel from "./SuperAdminPanel";
 import { formatAppDateTime } from "../../lib/time-zone";
 
 type Profile = {
@@ -132,7 +133,7 @@ function checkedLabel(value: string | null) {
   return value ? formatAppDateTime(value) : "Never";
 }
 
-export default function AdminClient({ email, aiConfigured }: { email: string; aiConfigured: boolean }) {
+export default function AdminClient({ email, aiConfigured, isSuperAdmin }: { email: string; aiConfigured: boolean; isSuperAdmin: boolean }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [websites, setWebsites] = useState<UsedWebsite[]>([]);
   const [health, setHealth] = useState<ScraperHealth[]>([]);
@@ -275,10 +276,11 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
   }
 
   return <main className="admin-page">
-    <header><a href="/dashboard">← Dashboard</a><div><span>PRICEWATCH ADMIN</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
+    <header><a href="/dashboard">← Dashboard</a><div><span>{isSuperAdmin ? "NEXUS SUPER ADMIN" : "NEXUS ADMIN"}</span><h1>Website search profiles</h1><p>Signed in as {email}</p></div></header>
     <section className={`ai-status ${aiConfigured ? "ready" : "missing"}`}><strong>AI-assisted review: {aiConfigured ? "Ready" : "API key required"}</strong><span>{aiConfigured ? "AI reviews every result against the selected store and searches for a replacement when needed. Nexus verifies every candidate page." : "Add OPENAI_API_KEY to the Site runtime settings to enable AI review and recovery. Normal website search remains active."}</span></section>
 
     {warnings.map(warning => <p className="admin-warning" role="status" key={warning}>{warning}</p>)}
+    {isSuperAdmin && <SuperAdminPanel/>}
     <section className="admin-card system-health-card">
       <div className="admin-intro system-health-head"><div><span className="editor-mode">SYSTEM HEALTH</span><h2>Setup and diagnostics</h2><p>These checks are read-only. They show whether the database schema and optional AI/renderer services are ready for scans.</p></div><button className="health-refresh" onClick={refreshSystemHealth} disabled={systemHealthLoading}>{systemHealthLoading ? "Checking…" : "Refresh checks"}</button></div>
       {!systemHealth ? <div className="admin-empty">Loading system health…</div> : <>

@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, index, integer, pgTable, primaryKey, text, uniqueIndex } from "drizzle-orm/pg-core";
+import { boolean, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const monitoredProducts = pgTable(
   "monitored_products",
@@ -88,6 +88,11 @@ export const userPlans = pgTable("user_plans", {
   planKey: text("plan_key").notNull().default("business"),
   urlLimit: integer("url_limit").notNull().default(150),
   checksPerDay: integer("checks_per_day").notNull().default(4),
+  subscriptionStatus: text("subscription_status").notNull().default("trial"),
+  trialEndsAt: timestamp("trial_ends_at", { withTimezone: true, mode: "string" })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP + INTERVAL '14 days'`),
+  subscriptionExpiresAt: timestamp("subscription_expires_at", { withTimezone: true, mode: "string" }),
   createdAt: text("created_at")
     .notNull()
     .default(sql`CURRENT_TIMESTAMP`),

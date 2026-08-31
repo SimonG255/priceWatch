@@ -75,4 +75,5 @@ Nexus uses Supabase Postgres through Drizzle. Set `DATABASE_URL` to the Supabase
 - Every user-facing database query is scoped to the authenticated email.
 - Spreadsheet exports neutralize formula-prefixed cells.
 - Admin access is controlled by `ADMIN_EMAILS`.
+- Super-admin access is controlled separately by `SUPER_ADMIN_EMAILS`. Super admins inherit normal admin access and can manage validated customer plan and subscription fields.
 - Before a commercial launch, configure the real operator/contact details, production SMTP/webhooks, hosting access policy, and billing.
