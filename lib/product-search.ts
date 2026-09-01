@@ -78,7 +78,7 @@ export type SearchRuntimeOptions = {
   network?: ScraperNetwork;
 };
 
-type QueueItem = { url: string; profileId: string; profileLabel: string; conditional?: boolean };
+type QueueItem = { url: string; profileId: string; profileLabel: string; conditional?: boolean; resourceKind?: "page" | "json" };
 type Page = QueueItem & FetchedPage;
 type FetchedPage = { url: string; html: string; etag?: string; lastModified?: string; httpStatus: number; notModified?: boolean; responseBytes?: number; contentHash?: string; durationMs?: number };
 type RankedMatch = ReturnType<typeof extractProductMatch> & { profileId?: string; profileLabel: string; etag?: string; lastModified?: string; httpStatus?: number; contentHash?: string; selectorSuggestions?: string[] };
@@ -249,6 +249,7 @@ async function searchPublicWebsiteInternal(
           knownBadPatterns: runtime.knownBadPatterns,
           profileId: candidate.profileId,
           profileLabel: candidate.profileLabel,
+          resourceKind: candidate.resourceKind,
           onAttempt: runtime.onAttempt,
           network: runtime.network,
         });
@@ -279,6 +280,11 @@ async function searchPublicWebsiteInternal(
             }
           }
           queue.splice(index + 1, 0, ...discovered);
+        }
+        for (const dataUrl of extractPublicDataUrls(page, root.hostname, ean)) {
+          if (!seen.has(dataUrl) && queue.length < 24) {
+            queue.push({ url: dataUrl, profileId: "public-json", profileLabel: "a declared same-site public JSON source", resourceKind: "json" });
+          }
         }
         for (const link of extractLikelyLinks(page, productName, ean, root.hostname)) {
           if (!seen.has(link) && queue.length < 24) queue.push({ url: link, profileId: candidate.profileId, profileLabel: candidate.profileLabel });
@@ -509,7 +515,7 @@ function pickBestMatch(matches: RankedMatch[]) {
 }
 
 async function matchFromPage(page: Page, productName: string, ean: string, profile: StoreExtractionProfile | undefined, cache?: ScraperResultCache): Promise<RankedMatch> {
-  const cacheHash = page.contentHash ? contentFingerprint(JSON.stringify(["extractor-v2", page.contentHash, profile ?? null])) : undefined;
+  const cacheHash = page.contentHash ? contentFingerprint(JSON.stringify(["extractor-v3", page.contentHash, profile ?? null])) : undefined;
   let cached: CachedProductMatch | undefined;
   try { cached = cacheHash ? await cache?.get({ url: page.url, ean, contentHash: cacheHash }) : undefined; } catch { cached = undefined; }
   const extracted = cached ?? extractProductMatch(page.html, page.url, productName, ean, profile);
@@ -922,6 +928,7 @@ type FetchPublicPageOptions = {
   maxBytes?: number;
   retryBudget?: number;
   retryState?: { remaining: number };
+  resourceKind?: "page" | "json";
   blockPatterns?: string[];
   conditional?: PreviousVerifiedProduct;
   reserveRequest?: () => Promise<{ allowed: boolean; retryAt?: string }>;
@@ -957,11 +964,18 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
             retryAfterMs: reservation.retryAt ? Math.max(0, Date.parse(reservation.retryAt) - Date.now()) : undefined,
           });
         }
-        const identity = options.network?.next();
+        const identity = options.network?.next(originalHostname);
         const headers: Record<string, string> = {
           "User-Agent": identity?.userAgent ?? "Nexus/1.0 (+public product monitor)",
-          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9",
+          "Accept-Language": identity?.acceptLanguage ?? "en-US,en;q=0.8",
+          Accept: options.resourceKind === "json"
+            ? "application/json,text/json;q=0.9,text/plain;q=0.5"
+            : "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.7,text/plain;q=0.5",
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
         };
+        const cookieHeader = options.network?.cookiesFor?.(current);
+        if (cookieHeader) headers.Cookie = cookieHeader;
         if (options.conditional?.pageEtag) headers["If-None-Match"] = options.conditional.pageEtag;
         if (options.conditional?.pageLastModified) headers["If-Modified-Since"] = options.conditional.pageLastModified;
         const requestInit: RequestInit & { dispatcher?: ReturnType<ScraperNetwork["next"]>["dispatcher"] } = {
@@ -974,6 +988,7 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           const location = response.headers.get("location");
           if (!location) throw new Error("Website redirect was incomplete.");
+          options.network?.rememberCookies?.(current, response.headers);
           await emitAttempt(options, {
             url: current.toString(), outcome: "fetched", reasonCode: "found", failureClass: "none",
             httpStatus: response.status, durationMs: Date.now() - startedAt, message: "Followed a same-store redirect.",
@@ -993,8 +1008,8 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
         const contentType = response.headers.get("content-type") ?? "";
         const declared = Number(response.headers.get("content-length") || 0);
         if (declared > maxBytes) throw new PublicPageFetchError("response_too_large", "The page is too large to search safely.", { httpStatus: response.status });
-        if (response.ok && !/html|xml|text/i.test(contentType)) {
-          throw new PublicPageFetchError("http_client_error", "The URL did not return a public webpage.", { httpStatus: response.status });
+        if (response.ok && !/html|xml|text|json/i.test(contentType)) {
+          throw new PublicPageFetchError("http_client_error", "The URL did not return a supported public page or JSON document.", { httpStatus: response.status });
         }
         const html = await readPublicText(response, maxBytes);
         const responseBytes = new TextEncoder().encode(html).byteLength;
@@ -1009,11 +1024,19 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
           throw new PublicPageFetchError("challenge", "Website requires a login before this page can be viewed.", { httpStatus: 401, reasonCode: "login_wall", failureClass: "permanent", challengeType: "login_wall" });
         }
         if (response.status === 403) throw new PublicPageFetchError("blocked", "Website blocked the public request (403).", { httpStatus: 403, reasonCode: "blocked" });
-        if (response.status === 429) throw new PublicPageFetchError("rate_limited", "Website rate-limited the public request (429).", { httpStatus: 429, retryAfterMs: retryAfterMs(response.headers.get("retry-after")), reasonCode: "rate_limited" });
+        if (response.status === 429) throw new PublicPageFetchError("rate_limited", "Website rate-limited the public request (429).", {
+          httpStatus: 429,
+          retryAfterMs: retryAfterMs(response.headers.get("retry-after")) ?? rateLimitResetMs(response.headers),
+          reasonCode: "rate_limited",
+        });
         if (response.status >= 500 || response.status === 408) {
           throw new PublicPageFetchError("unavailable", `Website is temporarily unavailable (${response.status}).`, { httpStatus: response.status, retryAfterMs: retryAfterMs(response.headers.get("retry-after")), reasonCode: response.status === 408 ? "timeout" : "http_server_error" });
         }
         if (!response.ok) throw new PublicPageFetchError("http_client_error", `Website returned ${response.status}.`, { httpStatus: response.status, reasonCode: "http_client_error", failureClass: "permanent" });
+        if (options.resourceKind === "json" && !/json|text\/plain/i.test(contentType) && !looksLikeJsonText(html)) {
+          throw new PublicPageFetchError("http_client_error", "The declared data URL did not return public JSON.", { httpStatus: response.status });
+        }
+        options.network?.rememberCookies?.(current, response.headers);
         const knownBad = matchKnownBadPattern(current.toString(), html, options.knownBadPatterns ?? []);
         if (knownBad) throw new PublicPageFetchError("http_client_error", knownBad.reason || "Page matched a known-bad extraction rule.", { httpStatus: response.status, reasonCode: "known_bad_pattern", failureClass: "permanent" });
         const contentHash = contentFingerprint(html);
@@ -1033,11 +1056,11 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
           });
         }
         if ((failure?.kind === "unavailable" || failure?.kind === "timeout") && attempt < retryBudget && consumeRetry(options.retryState)) {
-          await delay(Math.min(failure.retryAfterMs ?? 250 * 2 ** attempt, 2_000));
+          await delay(retryDelayWithJitter(Math.min(failure.retryAfterMs ?? 250 * 2 ** attempt, 2_000)));
           continue;
         }
         if (failure?.kind === "rate_limited" && failure.retryAfterMs != null && failure.retryAfterMs <= 2_000 && attempt < retryBudget && consumeRetry(options.retryState)) {
-          await delay(failure.retryAfterMs);
+          await delay(retryDelayWithJitter(failure.retryAfterMs));
           continue;
         }
         throw failure ?? error;
@@ -1071,6 +1094,24 @@ function retryAfterMs(value: string | null) {
   if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1_000, 6 * 60 * 60 * 1_000);
   const date = Date.parse(value);
   return Number.isFinite(date) ? Math.max(0, Math.min(date - Date.now(), 6 * 60 * 60 * 1_000)) : undefined;
+}
+
+function rateLimitResetMs(headers: Headers) {
+  const value = headers.get("ratelimit-reset") ?? headers.get("x-ratelimit-reset");
+  if (!value) return undefined;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return undefined;
+  const milliseconds = numeric > 10_000_000_000 ? numeric - Date.now() : numeric > 1_000_000_000 ? numeric * 1_000 - Date.now() : numeric * 1_000;
+  return Math.max(0, Math.min(milliseconds, 6 * 60 * 60 * 1_000));
+}
+
+function retryDelayWithJitter(milliseconds: number) {
+  return Math.ceil(Math.max(0, milliseconds) * (1 + Math.random() * 0.2));
+}
+
+function looksLikeJsonText(value: string) {
+  const trimmed = value.trim();
+  return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
 }
 
 function reasonCodeForFetchKind(kind: PublicPageFetchError["kind"]): ScraperReasonCode {
@@ -1154,10 +1195,46 @@ function isHostTerminalFailure(failure: PublicPageFetchError) {
   return failure.kind === "blocked" || failure.kind === "challenge" || failure.kind === "rate_limited";
 }
 
+function extractPublicDataUrls(page: Page, hostname: string, ean: string) {
+  const html = visibleCrawlHtml(page.html);
+  const candidates: Array<{ url: string; score: number }> = [];
+  const add = (raw: string | undefined, score: number) => {
+    if (!raw) return;
+    let url: URL;
+    try { url = new URL(decodeEntities(raw), page.url); } catch { return; }
+    if (!sameStoreHostname(url.hostname, hostname) || !["http:", "https:"].includes(url.protocol) || url.username || url.password) return;
+    if (/\/(?:account|admin|auth|checkout|login|oauth|session)(?:\/|$)/i.test(url.pathname)) return;
+    if ([...url.searchParams.keys()].some((key) => /(?:token|secret|auth|signature|session|password|passcode|api[_-]?key|access[_-]?key|jwt)/i.test(key))) return;
+    url.hash = "";
+    const routeScore = /(?:\/api\/|\.json(?:$|\/)|product|catalog|item|search)/i.test(`${url.pathname}${url.search}`) ? 3 : 0;
+    const identityScore = `${url.pathname}${url.search}`.includes(ean) ? 8 : 0;
+    candidates.push({ url: url.toString(), score: score + routeScore + identityScore });
+  };
+
+  for (const match of html.matchAll(/<link\b([^>]*)>/gi)) {
+    const attributes = parseCrawlAttributes(match[1]);
+    const rel = attributes.rel?.toLowerCase() ?? "";
+    const type = attributes.type?.toLowerCase() ?? "";
+    if (/(^|\s)alternate(\s|$)/.test(rel) && /(?:application|text)\/(?:[a-z0-9.+-]*\+)?json/.test(type)) add(attributes.href, 12);
+  }
+  for (const match of html.matchAll(/<[a-z][\w:-]*\b([^>]*)>/gi)) {
+    const attributes = parseCrawlAttributes(match[1]);
+    add(attributes["data-product-api"], 11);
+    add(attributes["data-product-json"], 11);
+    add(attributes["data-json-url"], 9);
+    add(attributes["data-api-url"], 8);
+  }
+
+  return [...new Map(candidates.sort((left, right) => right.score - left.score).map((candidate) => [candidate.url, candidate])).values()]
+    .slice(0, 3)
+    .map((candidate) => candidate.url);
+}
+
 function extractLikelyLinks(page: Page, productName: string, ean: string, hostname: string) {
   const terms = productName.toLowerCase().split(/\s+/).filter((word) => word.length > 2);
   const links: { url: string; score: number }[] = [];
-  const canonical = page.html.match(/<link\b[^>]*rel=["'][^"']*canonical[^"']*["'][^>]*href=["']([^"']+)["']|<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["'][^"']*canonical[^"']*["']/i);
+  const html = visibleCrawlHtml(page.html);
+  const canonical = html.match(/<link\b[^>]*rel=["'][^"']*canonical[^"']*["'][^>]*href=["']([^"']+)["']|<link\b[^>]*href=["']([^"']+)["'][^>]*rel=["'][^"']*canonical[^"']*["']/i);
   if (canonical) {
     try {
       const url = new URL(canonical[1] || canonical[2], page.url);
@@ -1165,7 +1242,7 @@ function extractLikelyLinks(page: Page, productName: string, ean: string, hostna
     } catch { /* ignore malformed canonical links */ }
   }
   const regex = /<(?:a|article)\b([^>]*?(?:href|data-product-url)=["']([^"']+)["'][^>]*)>([\s\S]*?)<\/(?:a|article)>/gi;
-  for (const match of page.html.matchAll(regex)) {
+  for (const match of html.matchAll(regex)) {
     const label = stripHtml(match[3]).toLowerCase();
     let url: URL;
     try { url = new URL(match[2], page.url); } catch { continue; }
@@ -1177,6 +1254,90 @@ function extractLikelyLinks(page: Page, productName: string, ean: string, hostna
     if (score > 0) links.push({ url: url.toString(), score });
   }
   return [...new Map(links.sort((a, b) => b.score - a.score).map((link) => [link.url, link])).values()].slice(0, 8).map((link) => link.url);
+}
+
+function visibleCrawlHtml(html: string) {
+  const hiddenSelectors = hiddenCssSelectors(html);
+  const source = html
+    .replace(/<script\b([^>]*)>[\s\S]*?<\/script>/gi, "<script$1></script>")
+    .replace(/<style\b([^>]*)>[\s\S]*?<\/style>/gi, "<style$1></style>");
+  const tokenPattern = /<\/?([a-z][\w:-]*)\b([^>]*)>/gi;
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  const stack: Array<{ tag: string; hides: boolean }> = [];
+  let hiddenDepth = 0;
+  let cursor = 0;
+  let output = "";
+  for (const match of source.matchAll(tokenPattern)) {
+    const index = match.index ?? 0;
+    if (hiddenDepth === 0) output += source.slice(cursor, index);
+    const token = match[0];
+    const tag = match[1].toLowerCase();
+    const closing = token.startsWith("</");
+    if (closing) {
+      const wasHidden = hiddenDepth > 0;
+      let matchingIndex = -1;
+      for (let stackIndex = stack.length - 1; stackIndex >= 0; stackIndex -= 1) {
+        if (stack[stackIndex].tag === tag) { matchingIndex = stackIndex; break; }
+      }
+      if (matchingIndex >= 0) {
+        for (const entry of stack.splice(matchingIndex)) if (entry.hides) hiddenDepth = Math.max(0, hiddenDepth - 1);
+      }
+      if (!wasHidden && hiddenDepth === 0) output += token;
+    } else {
+      const attributes = parseCrawlAttributes(match[2]);
+      const hides = crawlElementIsHidden(attributes, hiddenSelectors);
+      if (hiddenDepth === 0 && !hides) output += token;
+      if (!voidTags.has(tag) && !/\/\s*>$/.test(token)) {
+        stack.push({ tag, hides });
+        if (hides) hiddenDepth += 1;
+      }
+    }
+    cursor = index + token.length;
+  }
+  if (hiddenDepth === 0) output += source.slice(cursor);
+  return output
+    .replace(/<script\b[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[\s\S]*?<\/style>/gi, " ");
+}
+
+function hiddenCssSelectors(html: string) {
+  const classes = new Set<string>();
+  const ids = new Set<string>();
+  for (const style of html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)) {
+    for (const rule of style[1].matchAll(/([^{}]+)\{([^{}]+)\}/g)) {
+      if (!hiddenStyle(rule[2])) continue;
+      for (const selector of rule[1].split(",")) {
+        for (const match of selector.matchAll(/\.([\w-]+)/g)) classes.add(match[1]);
+        for (const match of selector.matchAll(/#([\w-]+)/g)) ids.add(match[1]);
+      }
+    }
+  }
+  return { classes, ids };
+}
+
+function crawlElementIsHidden(attributes: Record<string, string>, selectors: ReturnType<typeof hiddenCssSelectors>) {
+  if ("hidden" in attributes || "inert" in attributes || attributes["aria-hidden"]?.toLowerCase() === "true") return true;
+  if (attributes.style && hiddenStyle(attributes.style)) return true;
+  if (attributes.id && selectors.ids.has(attributes.id)) return true;
+  const classes = (attributes.class ?? "").split(/\s+/).filter(Boolean);
+  if (classes.some((value) => selectors.classes.has(value))) return true;
+  return classes.some((value) => /^(?:hidden|d-none|is-hidden|visually-hidden|sr-only|offscreen|honeypot|bot-trap)$/i.test(value));
+}
+
+function hiddenStyle(style: string) {
+  const compact = style.toLowerCase().replace(/\s+/g, "");
+  if (/display:none(?:!important)?(?:;|$)|visibility:(?:hidden|collapse)(?:!important)?(?:;|$)|opacity:0(?:\.0+)?(?:!important)?(?:;|$)/.test(compact)) return true;
+  if (/clip(?:-path)?:inset\((?:50|100)%\)|clip:rect\(0(?:px)?,?0(?:px)?,?0(?:px)?,?0(?:px)?\)/.test(compact)) return true;
+  if (/(?:left|top):-\d{3,}(?:px|rem|vw|vh)/.test(compact)) return true;
+  return /width:0(?:px)?(?:;|$)/.test(compact) && /height:0(?:px)?(?:;|$)/.test(compact);
+}
+
+function parseCrawlAttributes(fragment: string) {
+  const attributes: Record<string, string> = {};
+  for (const match of fragment.matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g)) {
+    attributes[match[1].toLowerCase()] = decodeEntities(match[2] ?? match[3] ?? match[4] ?? "");
+  }
+  return attributes;
 }
 
 function stripHtml(value: string) { return decodeEntities(value.replace(/<script\b[\s\S]*?<\/script>/gi, " ").replace(/<style\b[\s\S]*?<\/style>/gi, " ").replace(/<[^>]+>/g, " ")); }

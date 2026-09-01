@@ -531,6 +531,92 @@ test("uses an opted-in permitted renderer when normal HTML lacks product data", 
   assert.equal(result.evidence?.structuredExactEan, true);
 });
 
+test("reads a declared same-site public JSON source before rendering", async (t) => {
+  const dataUrl = `https://shop.example/api/products/${ean}.json`;
+  let dataAccept = "";
+  installFetchMock(t, (url, init) => {
+    if (url === storeUrl) {
+      return htmlResponse(`<html><head><link rel="alternate" type="application/json" href="${dataUrl}"></head><body><h1>${productName}</h1><p>Loading…</p></body></html>`);
+    }
+    if (url === dataUrl) {
+      dataAccept = new Headers(init?.headers).get("accept") ?? "";
+      return new Response(JSON.stringify({
+        product: { name: productName, ean, url: "/products/mx-master-4", currentPrice: "109.90", currency: "EUR", inStock: true },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, { onlyProfile: true });
+
+  assert.equal(result.status, "found");
+  assert.equal(result.priceCents, 10990);
+  assert.equal(result.currency, "EUR");
+  assert.equal(result.matchedUrl, "https://shop.example/products/mx-master-4");
+  assert.match(dataAccept, /application\/json/);
+});
+
+test("does not follow hidden honeypot links", async (t) => {
+  const trapUrl = `https://shop.example/products/trap-${ean}`;
+  const visibleUrl = `https://shop.example/products/mx-master-4-${ean}`;
+  const calls: string[] = [];
+  installFetchMock(t, (url) => {
+    calls.push(url);
+    if (url === storeUrl) return htmlResponse(`<html><head><style>.crawler-trap { display: none !important; }</style></head><body>
+      <div class="crawler-trap"><a href="${trapUrl}">${productName} ${ean}</a></div>
+      <a href="${visibleUrl}">${productName} ${ean}</a>
+      <a style="position:absolute;left:-9999px" href="/products/second-trap-${ean}">${productName}</a>
+    </body></html>`);
+    if (url === visibleUrl) return htmlResponse(productPage({ price: "109.90", url: visibleUrl }));
+    if (url.includes("trap")) throw new Error("A hidden crawler trap must never be requested.");
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, { onlyProfile: true });
+
+  assert.equal(result.status, "found");
+  assert.equal(calls.includes(visibleUrl), true);
+  assert.equal(calls.includes(trapUrl), false);
+  assert.equal(calls.some((url) => url.includes("second-trap")), false);
+});
+
+test("reuses only anonymous same-site cookies within one scan", async (t) => {
+  const productUrl = `https://shop.example/products/mx-master-4-${ean}`;
+  let productCookie = "";
+  installFetchMock(t, (url, init) => {
+    if (url === storeUrl) {
+      return new Response(`<html><body><a href="${productUrl}">${productName} ${ean}</a></body></html>`, {
+        status: 200,
+        headers: { "content-type": "text/html", "set-cookie": "catalog_session=public123; Path=/; Secure; HttpOnly" },
+      });
+    }
+    if (url === productUrl) {
+      productCookie = new Headers(init?.headers).get("cookie") ?? "";
+      return htmlResponse(productPage({ price: "109.90", url: productUrl }));
+    }
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, { onlyProfile: true });
+
+  assert.equal(result.status, "found");
+  assert.equal(productCookie, "catalog_session=public123");
+});
+
+test("rejects declared JSON URLs carrying credentials or auth tokens", async (t) => {
+  const calls: string[] = [];
+  installFetchMock(t, (url) => {
+    calls.push(url);
+    if (url === storeUrl) return htmlResponse(`<html><head><link rel="alternate" type="application/json" href="/api/product.json?access_token=secret"></head><body>Store</body></html>`);
+    throw new Error("A token-bearing data endpoint must not be requested.");
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, { onlyProfile: true });
+
+  assert.equal(result.status, "needs_review");
+  assert.deepEqual(calls, [storeUrl]);
+});
+
 test("passes explicit cookie consent instructions to the permitted renderer", async (t) => {
   const originalFetch = globalThis.fetch;
   const originalEndpoint = process.env.SCRAPER_RENDERER_URL;

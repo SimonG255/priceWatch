@@ -8,14 +8,18 @@ type Domain = {
   blockedChecks: number; unavailableChecks: number; needsReviewChecks: number; consecutiveFailures: number;
   lastOutcome: string | null; lastReasonCode: string | null; failureClass: string | null;
   lastChallengeType: string | null; backoffUntil: string | null; lastCheckedAt: string | null;
-  successRate: number; averageResponseMs: number | null; healthScore: number;
+  successRate: number; challengeRate: number; blockedRate: number; averageResponseMs: number | null; healthScore: number;
   lastFailure: { status: string; reasonCode: string | null; message: string | null; startedAt: string } | null;
 };
 type Run = { id: string; hostname: string; trigger: string; profileId: string | null; status: string; reasonCode: string | null; failureClass: string | null; challengeType: string | null; message: string | null; durationMs: number | null; attemptCount: number; startedAt: string };
 type Profile = { id: string; label: string; hostname: string; healthScore: number; driftStatus: string; lastSeenWorkingAt: string | null; updatedAt: string; selectorSuggestionsJson: string | null };
 type Operations = {
   generatedAt: string;
-  summary: { runs: number; operationalSuccessRate: number; matchRate: number; blockedRate: number; unavailableRate: number; medianResponseMs: number | null };
+  summary: {
+    runs: number; operationalSuccessRate: number; matchRate: number; blockedRate: number; unavailableRate: number;
+    challengeRate: number; captchaRate: number; rateLimitedRate: number; throughputPerHour: number;
+    medianResponseMs: number | null; p95ResponseMs: number | null;
+  };
   domains: Domain[]; profiles: Profile[]; needsReview: Run[]; recentRuns: Run[];
   alerting: { slackConfigured: boolean; emailConfigured: boolean };
 };
@@ -128,7 +132,10 @@ export default function ScraperOperations() {
     <section className="operations-kpis" aria-label="Scraper operations summary">
       <article><span>Operational success</span><strong>{percent(data.summary.operationalSuccessRate)}</strong><small>{data.summary.runs} runs in the last 30 days</small></article>
       <article><span>Blocked rate</span><strong>{percent(data.summary.blockedRate)}</strong><small>Challenge and access-control outcomes</small></article>
-      <article><span>Median response</span><strong>{data.summary.medianResponseMs == null ? "—" : `${data.summary.medianResponseMs.toLocaleString()} ms`}</strong><small>Completed scan duration</small></article>
+      <article><span>CAPTCHA rate</span><strong>{percent(data.summary.captchaRate)}</strong><small>{percent(data.summary.challengeRate)} across all challenge types</small></article>
+      <article><span>Rate-limited</span><strong>{percent(data.summary.rateLimitedRate)}</strong><small>429 and explicit rate-limit outcomes</small></article>
+      <article><span>Throughput</span><strong>{data.summary.throughputPerHour.toFixed(1)}/h</strong><small>Average checks over 30 days</small></article>
+      <article><span>Median response</span><strong>{data.summary.medianResponseMs == null ? "—" : `${data.summary.medianResponseMs.toLocaleString()} ms`}</strong><small>P95 {data.summary.p95ResponseMs == null ? "—" : `${data.summary.p95ResponseMs.toLocaleString()} ms`}</small></article>
       <article><span>Needs review</span><strong>{data.needsReview.length}</strong><small>Recent low-confidence or drifted runs</small></article>
     </section>
 

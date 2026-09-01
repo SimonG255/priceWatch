@@ -75,6 +75,7 @@ type SystemHealth = {
   migrations: { status: string; pending: string[]; applied: string[] };
   ai: { status: string; configured: boolean };
   renderer: { status: string; configured: boolean };
+  scheduler: { status: string; configured: boolean };
   lastFailedScan: { hostname?: string; status?: string; reasonCode?: string; message?: string; startedAt?: string } | null;
 };
 
@@ -312,13 +313,14 @@ export default function AdminClient({ email, aiConfigured }: { email: string; ai
 
     {warnings.map(warning => <p className="admin-warning" role="status" key={warning}>{warning}</p>)}
     <section className="admin-card system-health-card">
-      <div className="admin-intro system-health-head"><div><span className="editor-mode">SYSTEM HEALTH</span><h2>Setup and diagnostics</h2><p>These checks are read-only. They show whether the database schema and optional AI/renderer services are ready for scans.</p></div><button className="health-refresh" onClick={refreshSystemHealth} disabled={systemHealthLoading}>{systemHealthLoading ? "Checking…" : "Refresh checks"}</button></div>
+      <div className="admin-intro system-health-head"><div><span className="editor-mode">SYSTEM HEALTH</span><h2>Setup and diagnostics</h2><p>These checks are read-only. They show whether the database, scheduler, and optional AI/renderer services are ready for scans.</p></div><button className="health-refresh" onClick={refreshSystemHealth} disabled={systemHealthLoading}>{systemHealthLoading ? "Checking…" : "Refresh checks"}</button></div>
       {!systemHealth ? <div className="admin-empty">Loading system health…</div> : <>
         <div className="system-health-grid">
           <HealthCard label="Database" status={systemHealth.database.status} detail={systemHealth.database.connected ? "Connection accepted" : systemHealth.database.error || "Connection unavailable"}/>
           <HealthCard label="Migrations" status={systemHealth.migrations.status} detail={systemHealth.migrations.pending.length ? `${systemHealth.migrations.pending.length} pending` : "Schema is up to date"}/>
           <HealthCard label="AI review" status={systemHealth.ai.status} detail={systemHealth.ai.configured ? "OpenAI key configured" : "Optional OPENAI_API_KEY is missing"}/>
           <HealthCard label="Renderer" status={systemHealth.renderer.status} detail={systemHealth.renderer.configured ? "Endpoint and token configured" : "Optional renderer is not configured"}/>
+          <HealthCard label="Scheduler" status={systemHealth.scheduler.status} detail={systemHealth.scheduler.configured ? "Protected cron endpoint is ready" : "CRON_SECRET is missing or too short"}/>
         </div>
         {(systemHealth.database.missingTables.length > 0 || systemHealth.database.missingColumns.length > 0 || systemHealth.migrations.pending.length > 0) && <div className="system-health-details"><strong>Action needed</strong><span>{systemHealth.database.missingTables.length > 0 && `Missing tables: ${systemHealth.database.missingTables.join(", ")}. `}{systemHealth.database.missingColumns.length > 0 && `Missing columns: ${systemHealth.database.missingColumns.join(", ")}. `}{systemHealth.migrations.pending.length > 0 && `Run npm run db:migrate (${systemHealth.migrations.pending.join(", ")}).`}</span></div>}
         <div className="last-failed-scan"><strong>Last failed scan</strong>{systemHealth.lastFailedScan ? <span>{systemHealth.lastFailedScan.hostname || "Unknown site"} · {systemHealth.lastFailedScan.status || "failed"} · {systemHealth.lastFailedScan.reasonCode || "no reason code"} · {systemHealth.lastFailedScan.startedAt ? formatAppDateTime(systemHealth.lastFailedScan.startedAt) : "unknown time"}<small>{systemHealth.lastFailedScan.message || "No explanation recorded."}</small></span> : <span>No blocked, unavailable, review, or error scan has been recorded.</span>}</div>

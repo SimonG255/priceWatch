@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { ensureProductsSchema, getDb } from "../../../db";
 import { monitoredProducts, scraperSchedules } from "../../../db/schema";
 import { getCurrentUserEmail } from "../../../lib/current-user";
@@ -70,7 +70,7 @@ function publicSchedule(schedule: typeof scraperSchedules.$inferSelect) {
 function cleanName(value: unknown) { return typeof value === "string" ? value.trim().slice(0, 100) : ""; }
 
 function selectedProductIds(ids: string[]) {
-  return sql`${monitoredProducts.id} IN (SELECT CAST(value AS TEXT) FROM json_each(${JSON.stringify(ids)}))`;
+  return inArray(monitoredProducts.id, ids);
 }
 
 function validateTimeZone(value: string) {

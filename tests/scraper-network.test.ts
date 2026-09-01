@@ -30,8 +30,39 @@ test("rotates user-agents and proxies round-robin", () => {
 test("uses the identifiable Nexus user-agent when no pool is configured", () => {
   const network = createScraperNetwork({ userAgents: [], proxyUrls: [] });
   assert.equal(network.next().userAgent, "Nexus/1.0 (+public product monitor)");
+  assert.equal(network.next().acceptLanguage, "en-US,en;q=0.8");
   assert.equal(network.next().proxyUrl, undefined);
   assert.equal(network.next().dispatcher, undefined);
+});
+
+test("pins one consistent identity to a hostname for the scan", () => {
+  const network = createScraperNetwork({
+    userAgents: ["Nexus-Test/1", "Nexus-Test/2"],
+    proxyUrls: ["http://proxy-one.example:8080", "http://proxy-two.example:8080"],
+    sessionSeed: 0,
+  });
+
+  const first = network.next("shop.example");
+  const repeated = network.next("www.shop.example");
+  const other = network.next("other.example");
+
+  assert.equal(repeated, first);
+  assert.equal(first.userAgent, "Nexus-Test/1");
+  assert.equal(first.proxyUrl, "http://proxy-one.example:8080/");
+  assert.equal(other.userAgent, "Nexus-Test/2");
+  assert.equal(other.proxyUrl, "http://proxy-two.example:8080/");
+});
+
+test("keeps bounded anonymous cookies on the same host and path", () => {
+  const network = createScraperNetwork({ userAgents: [], proxyUrls: [] });
+  const headers = new Headers();
+  headers.append("set-cookie", "catalog_session=abc123; Path=/products; Secure; HttpOnly; SameSite=Lax");
+  network.rememberCookies?.(new URL("https://shop.example/products/one"), headers);
+
+  assert.equal(network.cookiesFor?.(new URL("https://shop.example/products/two")), "catalog_session=abc123");
+  assert.equal(network.cookiesFor?.(new URL("https://shop.example/search")), undefined);
+  assert.equal(network.cookiesFor?.(new URL("https://other.example/products/two")), undefined);
+  assert.equal(network.cookiesFor?.(new URL("http://shop.example/products/two")), undefined);
 });
 
 test("rejects non-HTTP proxy URLs", () => {
@@ -64,5 +95,6 @@ test("passes the rotated identity to public page fetches", async (t) => {
 
   assert.equal(result.status, "needs_review");
   assert.equal(new Headers(requestInit?.headers).get("user-agent"), "Nexus-Test/1");
+  assert.equal(new Headers(requestInit?.headers).get("accept-language"), "en-US,en;q=0.8");
   assert.ok((requestInit as RequestInit & { dispatcher?: unknown })?.dispatcher);
 });

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { scraperDomainCooldowns, scraperDomainState, scraperSitemapHints } from "../db/schema";
 import { sitemapCacheKey } from "./cache-keys.ts";
@@ -16,9 +16,10 @@ import type {
 const DOMAIN_REQUEST_INTERVAL_MS = 1_000;
 const SITEMAP_HINT_TTL_MS = 14 * 24 * 60 * 60 * 1_000;
 
-export async function reserveScraperDomain(hostname: string, options: { intervalMs?: number } = {}) {
+export async function reserveScraperDomain(hostname: string, options: { intervalMs?: number; jitterRatio?: number } = {}) {
   const normalized = normalizeHostname(hostname);
   const intervalMs = Math.max(500, Math.min(60_000, options.intervalMs ?? DOMAIN_REQUEST_INTERVAL_MS));
+  const jitterRatio = Math.max(0, Math.min(0.25, options.jitterRatio ?? 0.15));
   const db = getDb();
   const now = new Date();
   const nowIso = now.toISOString();
@@ -36,28 +37,29 @@ export async function reserveScraperDomain(hostname: string, options: { interval
       retryBudgetRemaining: cooldown[0].retryBudgetRemaining,
     };
   }
-  const nextAllowedAt = new Date(now.getTime() + intervalMs).toISOString();
+  const nextAllowedAt = new Date(now.getTime() + Math.ceil(intervalMs * (1 + Math.random() * jitterRatio))).toISOString();
+  // One atomic compare-and-set is the rate-control point for every worker.
+  // Concurrent server instances therefore cannot both reserve the same host.
+  const reserved = await db.execute(sql`
+    INSERT INTO public.scraper_domain_state (hostname, next_allowed_at, updated_at)
+    VALUES (${normalized}, ${nextAllowedAt}, ${nowIso})
+    ON CONFLICT (hostname) DO UPDATE
+    SET next_allowed_at = EXCLUDED.next_allowed_at, updated_at = EXCLUDED.updated_at
+    WHERE scraper_domain_state.next_allowed_at IS NULL OR scraper_domain_state.next_allowed_at <= ${nowIso}
+    RETURNING hostname
+  `) as unknown as Array<{ hostname: string }>;
+  if (reserved.length) return { allowed: true as const };
   const [current] = await db
     .select()
     .from(scraperDomainState)
     .where(eq(scraperDomainState.hostname, normalized))
     .limit(1);
-  if (!current || !current.nextAllowedAt || new Date(current.nextAllowedAt).getTime() <= now.getTime()) {
-    await db
-      .insert(scraperDomainState)
-      .values({ hostname: normalized, nextAllowedAt, updatedAt: nowIso })
-      .onConflictDoUpdate({
-        target: scraperDomainState.hostname,
-        set: { nextAllowedAt, updatedAt: nowIso },
-      });
-    return { allowed: true as const };
-  }
   return {
     allowed: false as const,
     retryAt: current?.nextAllowedAt ?? undefined,
     reasonCode: (current?.lastReasonCode as ScraperReasonCode | null | undefined) ?? undefined,
     failureClass: (current?.failureClass as ScraperFailureClass | null | undefined) ?? undefined,
-    retryBudgetRemaining: current.retryBudgetRemaining ?? undefined,
+    retryBudgetRemaining: current?.retryBudgetRemaining ?? undefined,
   };
 }
 
@@ -122,7 +124,12 @@ export async function recordScraperDomainOutcome(input: {
   const backoffUntil = hostCooldown
     ? new Date(
         now.getTime() +
-          exponentialBackoffMs({ consecutiveFailures: nextFailureCount, reasonCode, retryAfterMs: input.retryAfterMs }),
+          exponentialBackoffMs({
+            consecutiveFailures: nextFailureCount,
+            reasonCode,
+            retryAfterMs: input.retryAfterMs,
+            jitter: Math.random() * 0.25,
+          }),
       ).toISOString()
     : null;
   const retryBudgetRemaining = Math.max(0, 3 - nextFailureCount);

@@ -14,6 +14,21 @@ Nexus monitors public competitor product pages, verifies products by GTIN/EAN an
 
 Nexus only reads public HTTP(S) pages. It does not bypass logins, CAPTCHAs, paywalls, robots policy, or access challenges.
 
+## Production scraping safeguards
+
+The scraper covers the ten production challenges from the Crawlbase checklist while keeping Nexus limited to public, permitted data:
+
+1. **IP blocks and rate limits:** optional proxy pools, atomic per-domain reservations, bounded retries, `Retry-After` handling, jitter, and durable cooldowns.
+2. **CAPTCHAs:** page and soft-wall detection stops the host immediately, records the challenge, and applies backoff; Nexus never invokes a CAPTCHA solver.
+3. **JavaScript content:** an administrator can opt a store profile into the approved rendered-page service, with strict time, size, hostname, and verification limits.
+4. **Dynamic/AJAX data:** Nexus reads JSON-LD, embedded application state such as `__NEXT_DATA__`, raw JSON search responses, and explicitly declared same-site public JSON endpoints. Token-bearing or authenticated endpoints are rejected.
+5. **Site structure changes:** semantic extraction, required-field validation, content fingerprints, profile health scores, selector suggestions, drift alerts, and automatic disabling prevent silent bad prices.
+6. **Fingerprint consistency:** one scan keeps a stable user-agent/proxy identity, consistent language and cache headers, and bounded anonymous same-host cookies. Identities rotate between scans, not in the middle of one session.
+7. **Login walls:** login and authentication walls are classified as permanent public-access failures; credentials and private account pages are outside Nexus's scope.
+8. **Honeypots:** link discovery is selective and ignores elements hidden by attributes, common hidden classes, inline CSS, stylesheet rules, zero-size/off-screen styles, or trap markers.
+9. **Large batches:** products are stored as durable queued records and processed through leased, resumable schedules with fair per-domain batches; the protected cron route continues after a browser tab closes.
+10. **Maintenance and monitoring:** the admin console exposes operational, blocked, CAPTCHA, challenge, rate-limit, throughput, median/P95 latency, profile-drift, audit, and alert data.
+
 ## Requirements
 
 - Node.js 22.13 or newer
@@ -59,11 +74,13 @@ Use the connection string from Supabase Dashboard → Project Settings → Datab
 http://localhost:3000/auth/callback
 ```
 
-Customer and admin email alerts use `ALERT_EMAIL_WEBHOOK_URL`. Customer payloads include `to`, `subject`, and `text`; configure this webhook to hand delivery to your SMTP/email provider. Users can set a target price, percentage-drop threshold, and restock notifications per site. Scraper-health Slack alerts use `SLACK_WEBHOOK_URL`. Public scraper requests can optionally rotate a server-side `SCRAPER_USER_AGENTS` pool and `SCRAPER_PROXY_URLS` HTTP(S) proxy pool in round-robin order; the default user-agent remains the identifiable Nexus agent and proxies are never exposed to the client. An approved JavaScript renderer can be configured with `SCRAPER_RENDERER_URL` and `SCRAPER_RENDERER_TOKEN`; its endpoint must be public HTTPS. A profile may optionally configure a simple `cookieConsentSelector` when rendered fallback is enabled. The renderer receives that selector with `cookieConsentAction: "accept_all"`; it must click only a visible same-site button whose text explicitly confirms accepting all cookies, and must never use it to bypass CAPTCHA, login, or access controls.
+Customer and admin email alerts use `ALERT_EMAIL_WEBHOOK_URL`. Customer payloads include `to`, `subject`, and `text`; configure this webhook to hand delivery to your SMTP/email provider. Users can set a target price, percentage-drop threshold, and restock notifications per site. Scraper-health Slack alerts use `SLACK_WEBHOOK_URL`. Public scraper requests can optionally use a server-side `SCRAPER_USER_AGENTS` pool and `SCRAPER_PROXY_URLS` HTTP(S) proxy pool. Nexus chooses one pair per scan, keeps it stable for that scan, and chooses again for later scans; the default user-agent remains the identifiable Nexus agent and proxies are never exposed to the client. `SCRAPER_ACCEPT_LANGUAGE` controls the stable language header. An approved JavaScript renderer can be configured with `SCRAPER_RENDERER_URL` and `SCRAPER_RENDERER_TOKEN`; its endpoint must be public HTTPS. A profile may optionally configure a simple `cookieConsentSelector` when rendered fallback is enabled. The renderer receives that selector with `cookieConsentAction: "accept_all"`; it must click only a visible same-site button whose text explicitly confirms accepting all cookies, and must never use it to bypass CAPTCHA, login, or access controls.
+
+Set a random `CRON_SECRET` of at least 16 characters in production. The included `vercel.json` calls `GET /api/cron/scraper` every minute, and Vercel sends the secret as `Authorization: Bearer …`. Per-minute cron requires a Vercel Pro or Enterprise project; on another host, invoke the same protected route from its scheduler. The route claims only due schedules, and database leases make overlapping invocations safe.
 
 ## Import format
 
-Download `public/nexus-product-import-template.xlsx` from the dashboard. `Product Name` and a valid GTIN/EAN check digit are required. `SKU`, `Notes`, and `Your Price` are optional when present. A request may create at most 250 unique product–website combinations and is also bounded by the saved server-side plan.
+Download `public/nexus-product-import-template.xlsx` from the dashboard. `Product Name` and a valid GTIN/EAN check digit are required. `SKU`, `Notes`, and `Your Price` are optional when present. If no websites are selected, Nexus uses the OpenAI web-search integration to discover public online stores from the product name and EAN, then verifies every result through the existing scraper before saving a price. Product-entry drafts and website selections are saved locally in the browser so an accidentally closed tab can be restored. A request may create at most 250 unique product–website combinations and is also bounded by the saved server-side plan.
 
 ## Persistence and hosting
 

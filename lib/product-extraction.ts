@@ -26,7 +26,8 @@ type StructuredCandidate = {
 
 export function extractProductMatch(html: string, pageUrl: string, productName: string, ean: string, profile?: StoreExtractionProfile): ExtractedProductMatch {
   const scopedHtml = profile?.productSelector ? findSimpleSelectorHtml(html, profile.productSelector) || html : html;
-  const visibleText = stripHtml(scopedHtml).replace(/\s+/g, " ").trim();
+  const rawJsonDocument = looksLikeJsonDocument(scopedHtml);
+  const visibleText = rawJsonDocument ? "" : stripHtml(scopedHtml).replace(/\s+/g, " ").trim();
   const pageTitle = extractMeta(html, "og:title") || extractTag(html, "h1") || extractTag(html, "title") || "";
   const profileEan = profile?.eanSelector ? findSimpleSelectorText(html, profile.eanSelector) : undefined;
   // Raw markup can echo the requested barcode in a query URL, hidden input, or
@@ -91,30 +92,29 @@ export function extractProductMatch(html: string, pageUrl: string, productName: 
 
 function extractStructuredCandidates(html: string, productName: string, ean: string, pageEanMatch: boolean, profile?: StoreExtractionProfile) {
   const candidates: StructuredCandidate[] = [];
-  const scripts = html.matchAll(/<script\b[^>]*type=["']application\/ld\+json(?:;[^"']*)?["'][^>]*>([\s\S]*?)<\/script>/gi);
-  const documents: unknown[] = [];
+  const documents = extractJsonDocuments(html);
   const graph = new Map<string, JsonRecord>();
-  const collect = (value: unknown) => {
+  let collectedNodes = 0;
+  const collect = (value: unknown, depth = 0) => {
+    if (depth > 14 || collectedNodes >= 25_000) return;
     if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) { value.forEach(collect); return; }
+    collectedNodes += 1;
+    if (Array.isArray(value)) { value.forEach((entry) => collect(entry, depth + 1)); return; }
     const item = value as JsonRecord;
     if (typeof item["@id"] === "string") graph.set(item["@id"], item);
-    Object.values(item).forEach(collect);
+    Object.values(item).forEach((entry) => collect(entry, depth + 1));
   };
-  for (const match of scripts) {
-    try {
-      const document = JSON.parse(decodeEntities(match[1]).trim());
-      documents.push(document);
-      collect(document);
-    } catch { /* ignore malformed JSON-LD */ }
-  }
-  const visit = (value: unknown) => {
+  documents.forEach((document) => collect(document));
+  let visitedNodes = 0;
+  const visit = (value: unknown, depth = 0) => {
+    if (depth > 14 || visitedNodes >= 25_000) return;
     if (!value || typeof value !== "object") return;
-    if (Array.isArray(value)) { value.forEach(visit); return; }
+    visitedNodes += 1;
+    if (Array.isArray(value)) { value.forEach((entry) => visit(entry, depth + 1)); return; }
     const item = value as JsonRecord;
     const types = Array.isArray(item["@type"]) ? item["@type"] : [item["@type"]];
     if (types.some(type => /^(product|productgroup)$/i.test(String(type ?? "")))) {
-      const identifiers = [item.gtin, item.gtin8, item.gtin12, item.gtin13, item.gtin14, item.productID, item.sku, item.mpn]
+      const identifiers = [item.gtin, item.gtin8, item.gtin12, item.gtin13, item.gtin14, item.ean, item.ean13, item.barcode, item.productID, item.sku, item.mpn]
         .flatMap(value => Array.isArray(value) ? value : [value])
         .concat(profile?.jsonLdEanFields?.flatMap((path) => jsonPathValues(item, path)) ?? [])
         .filter(value => value != null)
@@ -133,11 +133,127 @@ function extractStructuredCandidates(html: string, productName: string, ean: str
       const url = firstString(offer?.url, item.url, item["@id"]);
       const score = (exactEan ? 260 : 0) + nameScore * 90 + (price != null ? 24 : 0) + (pageEanMatch ? 8 : 0);
       candidates.push({ name, url, exactEan, nameScore, priceCents: price, currency: normalizeCurrency(currency), availability, score });
+    } else {
+      const candidate = genericStructuredCandidate(item, productName, ean);
+      if (candidate) candidates.push(candidate);
     }
-    Object.values(item).forEach(visit);
+    Object.values(item).forEach((entry) => visit(entry, depth + 1));
   };
-  documents.forEach(visit);
+  documents.forEach((document) => visit(document));
   return candidates;
+}
+
+function extractJsonDocuments(html: string) {
+  const documents: unknown[] = [];
+  const parse = (raw: string) => {
+    const decoded = decodeEntities(raw).trim();
+    if (!looksLikeJsonDocument(decoded) || decoded.length > 2_000_000) return;
+    try { documents.push(JSON.parse(decoded)); } catch { /* ignore malformed embedded state */ }
+  };
+  for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    const type = attribute(match[1], "type")?.toLowerCase() ?? "";
+    const id = attribute(match[1], "id")?.toLowerCase() ?? "";
+    if (/^application\/(?:ld\+)?json(?:;|$)/.test(type) || id === "__next_data__" || id === "__nuxt_data__") parse(match[2]);
+  }
+  if (looksLikeJsonDocument(html)) parse(html);
+  return documents;
+}
+
+function genericStructuredCandidate(item: JsonRecord, productName: string, ean: string): StructuredCandidate | undefined {
+  const identifiers = valuesForKeys(item, ["gtin", "gtin8", "gtin12", "gtin13", "gtin14", "ean", "ean8", "ean13", "ean14", "barcode", "productid", "sku", "mpn"])
+    .map((value) => digitsOnly(String(value)));
+  const exactEan = identifiers.includes(ean);
+  const name = firstValueForKeys(item, ["name", "productname", "displayname", "title"]);
+  const normalizedName = typeof name === "string" ? decodeEntities(name).trim() : undefined;
+  const nameScore = scoreName(productName, normalizedName ?? "");
+  const hasProductShape = exactEan || Object.keys(item).some((key) => /^(?:product|productdata|item|variant)$/i.test(key));
+  if (!hasProductShape || !normalizedName || (!exactEan && nameScore < 0.65)) return undefined;
+  const price = genericPrice(item);
+  const currency = firstNestedValueForKeys(item, ["pricecurrency", "currency", "currencycode"], 3);
+  const availabilityValue = firstNestedValueForKeys(item, ["availability", "stockstatus", "inventorystatus"], 2);
+  const inStock = firstValueForKeys(item, ["instock", "isinstock"]);
+  const availability = availabilityValue == null && typeof inStock === "boolean"
+    ? (inStock ? "InStock" : "OutOfStock")
+    : availabilityValue == null ? undefined : String(availabilityValue);
+  const urlValue = firstValueForKeys(item, ["url", "canonicalurl", "producturl", "link"]);
+  const url = typeof urlValue === "string" ? urlValue : undefined;
+  const score = (exactEan ? 250 : 0) + nameScore * 86 + (price != null ? 22 : 0);
+  return {
+    name: normalizedName,
+    url,
+    exactEan,
+    nameScore,
+    priceCents: price,
+    currency: currency == null ? undefined : normalizeCurrency(String(currency)),
+    availability,
+    score,
+  };
+}
+
+function genericPrice(item: JsonRecord) {
+  const candidates: Array<{ cents: number; score: number }> = [];
+  const queue: Array<{ value: JsonRecord; depth: number; parent: string }> = [{ value: item, depth: 0, parent: "" }];
+  const nestedContainers = /^(?:offer|offers|price|prices|pricing|variant|variants|sale|current)$/i;
+  let visited = 0;
+  while (queue.length && visited < 500) {
+    const current = queue.shift()!;
+    visited += 1;
+    for (const [key, raw] of Object.entries(current.value)) {
+      const normalizedKey = key.toLowerCase().replace(/[^a-z]/g, "");
+      const path = `${current.parent}.${normalizedKey}`;
+      const blocked = /(?:old|original|regular|list|rrp|msrp|shipping|delivery|discount|saving)/.test(path);
+      const centsField = /(?:current|sale|final|selling|unit)?pricecents$/.test(normalizedKey);
+      const priceField = /^(?:price|currentprice|saleprice|finalprice|sellingprice|unitprice|amount|value)$/.test(normalizedKey)
+        && (current.depth === 0 || /price|pricing|offer|sale|current/.test(current.parent));
+      if (!blocked && (centsField || priceField) && (typeof raw === "string" || typeof raw === "number")) {
+        const parsed = centsField ? Number(raw) : parsePriceCents(String(raw));
+        if (Number.isFinite(parsed) && Number(parsed) > 0 && Number(parsed) < 100_000_000) {
+          candidates.push({ cents: Math.round(Number(parsed)), score: /current|sale|final|selling/.test(path) ? 30 : 10 });
+        }
+      }
+      if (current.depth >= 3 || !nestedContainers.test(key)) continue;
+      for (const child of (Array.isArray(raw) ? raw.slice(0, 50) : [raw])) {
+        const record = asRecord(child);
+        if (record) queue.push({ value: record, depth: current.depth + 1, parent: path });
+      }
+    }
+  }
+  return candidates.sort((left, right) => right.score - left.score)[0]?.cents;
+}
+
+function valuesForKeys(item: JsonRecord, keys: string[]) {
+  const expected = new Set(keys.map((key) => key.toLowerCase()));
+  return Object.entries(item)
+    .filter(([key]) => expected.has(key.toLowerCase().replace(/[^a-z0-9]/g, "")))
+    .flatMap(([, value]) => Array.isArray(value) ? value : [value])
+    .filter((value) => value != null && typeof value !== "object");
+}
+
+function firstValueForKeys(item: JsonRecord, keys: string[]) {
+  return valuesForKeys(item, keys)[0];
+}
+
+function firstNestedValueForKeys(item: JsonRecord, keys: string[], maximumDepth: number) {
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: item, depth: 0 }];
+  let visited = 0;
+  while (queue.length && visited < 500) {
+    const current = queue.shift()!;
+    visited += 1;
+    const record = asRecord(current.value);
+    if (!record) continue;
+    const direct = firstValueForKeys(record, keys);
+    if (direct != null) return direct;
+    if (current.depth >= maximumDepth) continue;
+    for (const value of Object.values(record)) {
+      for (const child of (Array.isArray(value) ? value.slice(0, 50) : [value])) if (child && typeof child === "object") queue.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+  return undefined;
+}
+
+function looksLikeJsonDocument(value: string) {
+  const trimmed = value.trim();
+  return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
 }
 
 function chooseOffer(value: unknown): JsonRecord | undefined {

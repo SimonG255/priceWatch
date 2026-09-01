@@ -24,6 +24,7 @@ const MIGRATIONS = [
   "0007_cookie_consent_selector.sql",
   "0008_monitoring_alerts.sql",
   "0010_search_profile_admin_columns.sql",
+  "0011_scraper_scale_indexes.sql",
 ];
 
 export type SystemHealth = Awaited<ReturnType<typeof getSystemHealth>>;
@@ -33,6 +34,8 @@ export async function getSystemHealth() {
   const ai = { status: process.env.OPENAI_API_KEY ? "ready" : "not_configured", configured: Boolean(process.env.OPENAI_API_KEY) } as const;
   const rendererConfigured = Boolean(process.env.SCRAPER_RENDERER_URL && process.env.SCRAPER_RENDERER_TOKEN);
   const renderer = { status: rendererConfigured ? "configured" : "not_configured", configured: rendererConfigured } as const;
+  const schedulerConfigured = (process.env.CRON_SECRET?.length ?? 0) >= 16;
+  const scheduler = { status: schedulerConfigured ? "configured" : "not_configured", configured: schedulerConfigured } as const;
 
   try {
     const db = getDb();
@@ -102,6 +105,7 @@ export async function getSystemHealth() {
       },
       ai,
       renderer,
+      scheduler,
       lastFailedScan,
     };
   } catch (error) {
@@ -117,6 +121,7 @@ export async function getSystemHealth() {
       migrations: { status: "unknown", pending: MIGRATIONS, applied: [] },
       ai,
       renderer,
+      scheduler,
       lastFailedScan: null,
     };
   }

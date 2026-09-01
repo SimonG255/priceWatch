@@ -309,6 +309,7 @@ export const scrapeRuns = pgTable(
     index("scrape_runs_hostname_time_idx").on(table.hostname, table.startedAt),
     index("scrape_runs_status_reason_time_idx").on(table.status, table.reasonCode, table.startedAt),
     index("scrape_runs_profile_time_idx").on(table.profileId, table.startedAt),
+    index("scrape_runs_started_at_idx").on(table.startedAt),
   ],
 );
 
@@ -437,7 +438,10 @@ export const scraperSchedules = pgTable(
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
   },
-  (table) => [index("scraper_schedules_owner_due_idx").on(table.ownerEmail, table.enabled, table.nextRunAt)],
+  (table) => [
+    index("scraper_schedules_owner_due_idx").on(table.ownerEmail, table.enabled, table.nextRunAt),
+    index("scraper_schedules_due_idx").on(table.enabled, table.nextRunAt, table.leaseUntil),
+  ],
 );
 
 export const scraperAlertRules = pgTable("scraper_alert_rules", {

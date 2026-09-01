@@ -27,6 +27,8 @@ type ScanAttempt = { id: string; url: string; outcome: string; reasonCode: strin
 type ProductHistoryState = { loading: boolean; snapshots: PriceSnapshot[]; summaryByCurrency: PriceSummary[]; latestRun: ScanRun | null; attempts: ScanAttempt[]; error: string };
 
 const emptyDraft = (id = "product-1"): ProductDraft => ({ id, productName: "", ean: "", sku: "", ownPrice: "" });
+const draftStoragePrefix = "nexus-product-drafts:";
+const websiteSelectionStoragePrefix = "nexus-selected-websites:";
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, React.ReactNode> = {
@@ -73,6 +75,10 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
   const [productDrafts, setProductDrafts] = useState<ProductDraft[]>([emptyDraft()]);
   const [bulkProgress, setBulkProgress] = useState("");
+  const [discoveringWebsites, setDiscoveringWebsites] = useState(false);
+  const [discoveryProgress, setDiscoveryProgress] = useState("");
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const [websiteSelectionHydrated, setWebsiteSelectionHydrated] = useState(false);
   const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [importProgress, setImportProgress] = useState("");
@@ -80,12 +86,55 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   const planLimit = plan.urlLimit;
   const firstName = displayName.split(/\s|@/)[0] || "there";
   const initials = displayName.split(/\s+/).map(part => part[0]).join("").slice(0, 2).toUpperCase() || "PW";
+  const draftStorageKey = `${draftStoragePrefix}${email.toLowerCase()}`;
+  const websiteSelectionStorageKey = `${websiteSelectionStoragePrefix}${email.toLowerCase()}`;
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(draftStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        const restored = restoreProductDrafts(parsed);
+        if (restored.length) setProductDrafts(restored);
+      }
+    } catch {
+      // A restricted or malformed local storage entry must not block the dashboard.
+    } finally {
+      setDraftHydrated(true);
+    }
+  }, [draftStorageKey]);
+
+  useEffect(() => {
+    if (!draftHydrated) return;
+    try {
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(productDrafts));
+    } catch {
+      // Draft persistence is best effort when browser storage is unavailable.
+    }
+  }, [draftHydrated, draftStorageKey, productDrafts]);
 
   useEffect(() => {
     Promise.all([jsonRequest<{ products: Product[] }>("/api/products"), jsonRequest<{ websites: Website[] }>("/api/websites")])
-      .then(([productData, websiteData]) => { setProducts(productData.products); setWebsites(websiteData.websites); setSelectedWebsiteIds(websiteData.websites.map(website => website.id)); })
-      .catch(err => setError(err.message)).finally(() => setLoading(false));
-  }, []);
+      .then(([productData, websiteData]) => {
+        setProducts(productData.products);
+        setWebsites(websiteData.websites);
+        const savedSelection = readStoredWebsiteSelection(websiteSelectionStorageKey);
+        setSelectedWebsiteIds(savedSelection == null
+          ? websiteData.websites.map(website => website.id)
+          : websiteData.websites.filter(website => savedSelection.includes(website.id)).map(website => website.id));
+        setWebsiteSelectionHydrated(true);
+      })
+      .catch(err => { setWebsiteSelectionHydrated(true); setError(err.message); }).finally(() => setLoading(false));
+  }, [websiteSelectionStorageKey]);
+
+  useEffect(() => {
+    if (!websiteSelectionHydrated) return;
+    try {
+      window.localStorage.setItem(websiteSelectionStorageKey, JSON.stringify(selectedWebsiteIds));
+    } catch {
+      // Website selection is a convenience preference and can be recreated safely.
+    }
+  }, [selectedWebsiteIds, websiteSelectionHydrated, websiteSelectionStorageKey]);
 
   async function refreshProducts() {
     const data = await jsonRequest<{ products: Product[] }>("/api/products");
@@ -170,6 +219,41 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     setSelectedWebsiteIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
   }
 
+  async function discoverWebsitesForProducts(items: Array<Pick<ProductDraft, "productName" | "ean">>) {
+    const productsToDiscover = [...new Map(items.map(item => [item.ean.replace(/\D/g, ""), {
+      productName: item.productName.trim(),
+      ean: item.ean.trim(),
+    }])).values()];
+    if (!productsToDiscover.length) throw new Error("Enter at least one product name and EAN first.");
+    setDiscoveringWebsites(true);
+    setDiscoveryProgress("Finding online stores…");
+    try {
+      const result = await jsonRequest<{ websites: Website[]; discoveredCount: number }>("/api/websites/discover", {
+        method: "POST",
+        body: JSON.stringify({ products: productsToDiscover }),
+      });
+      setWebsites(current => {
+        const incomingIds = new Set(result.websites.map(website => website.id));
+        return [...current.filter(website => !incomingIds.has(website.id)), ...result.websites];
+      });
+      setSelectedWebsiteIds(current => [...new Set([...current, ...result.websites.map(website => website.id)])]);
+      showToast(`${result.discoveredCount} online store${result.discoveredCount === 1 ? "" : "s"} found and selected`);
+      return result.websites;
+    } finally {
+      setDiscoveryProgress("");
+      setDiscoveringWebsites(false);
+    }
+  }
+
+  async function discoverWebsites() {
+    setError("");
+    try {
+      await discoverWebsitesForProducts(activeDrafts);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Online stores could not be discovered.");
+    }
+  }
+
   async function scanOne(id: string, quiet = false) {
     setProducts(current => current.map(product => product.id === id ? { ...product, status: "searching", statusMessage: "Searching public pages…" } : product));
     try {
@@ -194,22 +278,28 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     }
   }
 
-  function countNewPairs(items: { ean: string }[]) {
+  function countNewPairs(items: { ean: string }[], searchWebsites = selectedWebsites) {
     const existing = new Set(products.map(product => `${product.websiteUrl}\u0000${product.ean}`));
     const eans = [...new Set(items.map(item => item.ean.replace(/\D/g, "")).filter(Boolean))];
-    return selectedWebsites.reduce((count, website) => count + eans.filter(ean => !existing.has(`${website.url}\u0000${ean}`)).length, 0);
+    return searchWebsites.reduce((count, website) => count + eans.filter(ean => !existing.has(`${website.url}\u0000${ean}`)).length, 0);
   }
 
   async function addProducts(event: React.FormEvent) {
     event.preventDefault(); setSaving(true); setError("");
     try {
       if (!activeDrafts.length) throw new Error("Add at least one product.");
-      if (!selectedWebsiteIds.length) throw new Error("Select at least one website.");
-      if (combinationCount > 250) throw new Error("Search up to 250 product-website combinations at a time.");
-      const newPairs = countNewPairs(activeDrafts);
+      let searchWebsites = selectedWebsites;
+      if (!searchWebsites.length) {
+        searchWebsites = await discoverWebsitesForProducts(activeDrafts);
+      }
+      if (!searchWebsites.length) throw new Error("Select at least one website or let Nexus find stores automatically.");
+      const searchWebsiteIds = searchWebsites.map(website => website.id);
+      const searchCount = uniqueDraftCount * searchWebsites.length;
+      if (searchCount > 250) throw new Error("Search up to 250 product-website combinations at a time.");
+      const newPairs = countNewPairs(activeDrafts, searchWebsites);
       if (newPairs > planLimit - products.length) throw new Error(`This adds ${newPairs} monitored searches, but your plan has room for ${Math.max(0, planLimit - products.length).toLocaleString()}.`);
-      setBulkProgress(`Saving ${combinationCount} product-website combinations…`);
-      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: activeDrafts.map(({ productName, ean, sku, ownPrice }) => ({ productName, ean, sku, ownPriceCents: ownPrice ? Math.round(Number(ownPrice) * 100) : null })), websiteIds: selectedWebsiteIds }) });
+      setBulkProgress(`Saving ${searchCount} product-website combinations…`);
+      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: activeDrafts.map(({ productName, ean, sku, ownPrice }) => ({ productName, ean, sku, ownPriceCents: ownPrice ? Math.round(Number(ownPrice) * 100) : null })), websiteIds: searchWebsiteIds }) });
       mergeProducts(result.products);
       await scanMany(result.products, setBulkProgress);
       setProductDrafts([emptyDraft()]);
@@ -219,7 +309,12 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   }
 
   async function addWebsite(event: React.FormEvent) {
-    event.preventDefault(); setSaving(true); setError("");
+    event.preventDefault();
+    if (!newWebsiteUrl.trim()) {
+      await discoverWebsites();
+      return;
+    }
+    setSaving(true); setError("");
     try {
       const { website } = await jsonRequest<{ website: Website }>("/api/websites", { method: "POST", body: JSON.stringify({ url: newWebsiteUrl }) });
       setWebsites(current => current.some(item => item.id === website.id) ? current : [...current, website]);
@@ -282,26 +377,31 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
       let rows: unknown[][];
       try { rows = await readXlsxFile(file, { sheet: "Products" }) as unknown[][]; }
       catch { rows = await readXlsxFile(file) as unknown[][]; }
-      const headerRow = rows.findIndex(row => row.some(cell => ["product name", "name", "ean", "gtin", "barcode"].includes(String(cell ?? "").trim().toLowerCase())));
+      const headerRow = rows.findIndex(row => row.some(cell => ["product name", "name", "product", "ean", "gtin", "barcode"].includes(normalizeImportHeader(cell))));
       if (headerRow < 0) throw new Error("Could not find Product Name and EAN headers.");
-      const headers = rows[headerRow].map(cell => String(cell ?? "").trim().toLowerCase());
-      const column = (names: string[]) => headers.findIndex(header => names.includes(header));
-      const nameIndex = column(["product name", "name"]); const eanIndex = column(["ean", "gtin", "barcode"]);
-      const skuIndex = column(["sku (optional)", "sku"]); const notesIndex = column(["notes (optional)", "notes"]);
-      const ownPriceIndex = column(["your price (optional)", "your price", "own price"]);
+      const headers = rows[headerRow].map(normalizeImportHeader);
+      const column = (names: string[]) => headers.findIndex(header => names.some(name => header === name || header.startsWith(`${name} `)));
+      const nameIndex = column(["product name", "name", "product", "naziv", "naziv izdelka"]); const eanIndex = column(["ean", "gtin", "barcode", "ean gtin"]);
+      const skuIndex = column(["sku"]); const notesIndex = column(["notes", "opombe"]);
+      const ownPriceIndex = column(["your price", "own price", "lastna cena", "vaša cena"]);
       if ([nameIndex, eanIndex].some(index => index < 0)) throw new Error("The workbook needs Product Name and EAN columns.");
-      if (!selectedWebsiteIds.length) throw new Error("Select at least one website before importing products.");
-      const imported = rows.slice(headerRow + 1).map(row => ({
-        productName: String(row[nameIndex] ?? "").trim(), ean: String(row[eanIndex] ?? "").trim(),
-        sku: skuIndex >= 0 ? String(row[skuIndex] ?? "").trim() : "", notes: notesIndex >= 0 ? String(row[notesIndex] ?? "").trim() : "",
-        ownPriceCents: ownPriceIndex >= 0 && row[ownPriceIndex] !== "" && row[ownPriceIndex] != null ? Math.round(Number(row[ownPriceIndex]) * 100) : null,
+      const imported = rows.slice(headerRow + 1).map((row, rowIndex) => ({
+        productName: importCellText(row[nameIndex]), ean: importCellText(row[eanIndex]),
+        sku: skuIndex >= 0 ? importCellText(row[skuIndex]) : "", notes: notesIndex >= 0 ? importCellText(row[notesIndex]) : "",
+        ownPriceCents: parseImportedPrice(ownPriceIndex >= 0 ? row[ownPriceIndex] : null, headerRow + rowIndex + 2),
       })).filter(row => row.productName && row.ean && !/example product/i.test(row.productName));
       if (!imported.length) throw new Error("No product rows were found. Delete the example row and add your products first.");
+      let searchWebsites = selectedWebsites;
+      if (!searchWebsites.length) {
+        setImportProgress("Finding online stores from the imported EANs…");
+        searchWebsites = await discoverWebsitesForProducts(imported);
+      }
+      if (!searchWebsites.length) throw new Error("Select at least one website or let Nexus find stores automatically.");
       const remaining = planLimit - products.length;
-      const newPairs = countNewPairs(imported);
+      const newPairs = countNewPairs(imported, searchWebsites);
       if (newPairs > remaining) throw new Error(`This import adds ${newPairs} searches, but your plan has room for ${Math.max(0, remaining)}.`);
-      setImportProgress(`Saving products across ${selectedWebsites.length} selected websites…`);
-      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: imported, websiteIds: selectedWebsiteIds }) });
+      setImportProgress(`Saving products across ${searchWebsites.length} websites…`);
+      const result = await jsonRequest<{ products: Product[]; productCount: number; websiteCount: number; searchCount: number }>("/api/products/bulk", { method: "POST", body: JSON.stringify({ products: imported, websiteIds: searchWebsites.map(website => website.id) }) });
       mergeProducts(result.products);
       await scanMany(result.products, setImportProgress);
       setImportOpen(false); setImportProgress(""); showToast(`${result.productCount} products searched on ${result.websiteCount} websites`);
@@ -348,16 +448,16 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
       <header><button className="menu-btn" onClick={() => setMenu(true)} aria-label="Open navigation"><Icon name="menu"/></button><div><p>{plan.urlLimit.toLocaleString()} monitored searches · {plan.checksPerDay === 1 ? "daily checks" : `${plan.checksPerDay} checks/day`}</p><h1>Good morning, {firstName}.</h1></div><div className="header-actions"><button className="secondary-action" onClick={() => setImportOpen(true)}><Icon name="upload"/>Import Excel</button><button className="primary" onClick={() => exportWorkbook()}><Icon name="download"/>Export Excel</button></div></header>
 
       <section className="product-search-card website-card">
-        <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Add websites, then select where to search</h2><p>Save each public store once. Select one or many websites for manual searches and Excel imports.</p></div></div>
-        <form className="website-form" onSubmit={addWebsite}><label><span>Website URL</span><input required type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/></label><button className="secondary-action" disabled={saving} type="submit"><Icon name="plus"/>Add website</button></form>
+        <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Let Nexus find stores automatically</h2><p>Enter a product below and Nexus will search the web for relevant online stores. You can still add a specific website manually when needed.</p></div></div>
+        <form className="website-form" onSubmit={addWebsite}><label><span>Website URL <small>optional</small></span><input type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/><small>Or leave this empty and let Nexus discover stores from the products below.</small></label><div className="website-form-actions"><button className="auto-discover" disabled={saving || discoveringWebsites || !activeDrafts.length} type="button" onClick={discoverWebsites}><Icon name="bolt"/>{discoveryProgress || "Find stores automatically"}</button><button className="secondary-action" disabled={saving || discoveringWebsites} type="submit"><Icon name="plus"/>Add website</button></div></form>
         <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
         <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <span className="website-pill" key={website.id}><button type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button><button type="button" className="website-remove" onClick={() => removeWebsite(website)} aria-label={`Remove ${new URL(website.url).hostname}`}><Icon name="trash" size={12}/></button></span>; }) : <small>No websites added yet.</small>}</div>
       </section>
 
       <section className="product-search-card" id="search-product">
-        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">BULK PRODUCT SEARCH</span><h2>Search multiple products on multiple websites</h2><p>Add product rows below. Nexus creates and searches every product × selected website combination.</p></div></div>
+        <div className="search-intro"><span className="search-mark"><Icon name="search" size={22}/></span><div><span className="eyebrow">BULK PRODUCT SEARCH</span><h2>Search products across the web</h2><p>Add product names and EANs. Nexus searches every selected website, or finds relevant stores automatically if none are selected.</p></div></div>
         <form className="bulk-product-form" onSubmit={addProducts}>
-          <div className="selected-sites-summary"><strong>Searching on {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"}</strong><span>{selectedWebsites.length ? selectedWebsites.map(website => new URL(website.url).hostname).join(", ") : "Select at least one website above."}</span></div>
+          <div className="selected-sites-summary"><strong>{selectedWebsites.length ? `Searching on ${selectedWebsites.length} website${selectedWebsites.length === 1 ? "" : "s"}` : "Automatic store discovery"}</strong><span>{selectedWebsites.length ? selectedWebsites.map(website => new URL(website.url).hostname).join(", ") : "No websites selected — Nexus will find stores from the EAN and product name."}</span></div>
           <div className="draft-list">{productDrafts.map((draft, index) => <div className="draft-row" key={draft.id}>
             <span className="draft-number">{index + 1}</span>
             <label><span>Product name</span><input required value={draft.productName} onChange={event => updateDraft(draft.id, "productName", event.target.value)} placeholder="Logitech MX Master 4"/></label>
@@ -366,7 +466,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
             <label><span>Your price <small>optional</small></span><input type="number" min="0" step="0.01" value={draft.ownPrice} onChange={event => updateDraft(draft.id, "ownPrice", event.target.value)} placeholder="119.99"/></label>
             <button className="remove-draft" type="button" disabled={productDrafts.length === 1} onClick={() => removeDraft(draft.id)} aria-label={`Remove product row ${index + 1}`}><Icon name="trash" size={15}/></button>
           </div>)}</div>
-          <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{uniqueDraftCount} product{uniqueDraftCount === 1 ? "" : "s"} × {selectedWebsites.length} website{selectedWebsites.length === 1 ? "" : "s"} = {combinationCount} searches</strong><small>Existing combinations are updated without creating duplicates.</small></div><button className="primary search-submit" disabled={saving || !selectedWebsites.length} type="submit"><Icon name="search"/>{bulkProgress || "Add & search combinations"}</button></div>
+          <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{selectedWebsites.length ? `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} × ${selectedWebsites.length} website${selectedWebsites.length === 1 ? "" : "s"} = ${combinationCount} searches` : `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} · stores found automatically`}</strong><small>Drafts save on this device; submitted searches enter the durable server queue before scanning.</small></div><button className="primary search-submit" disabled={saving || discoveringWebsites || !activeDrafts.length} type="submit"><Icon name={selectedWebsites.length ? "search" : "bolt"}/>{bulkProgress || (selectedWebsites.length ? "Add & search combinations" : "Find stores & search")}</button></div>
         </form>
         <details className="search-routing-help">
           <summary>How Nexus chooses a website search URL</summary>
@@ -411,8 +511,8 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
 
     {importOpen && <div className="modal-backdrop" onMouseDown={() => !importProgress && setImportOpen(false)}><div className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={event => event.stopPropagation()}>
       <button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required. Each row will be searched on the websites selected below.</p>
-      <div className="import-website-picker"><div><strong>Websites to search</strong><span>{selectedWebsites.length} selected</span></div><div className="website-list selectable">{websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; })}</div></div>
-      <div className="import-steps"><span><b>1</b>Select websites</span><span><b>2</b>Fill in name and EAN</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/nexus-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || !selectedWebsites.length} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Select a website first")}</button><small className="import-limit">Products are saved and searched in batches of three to avoid overwhelming store websites.</small>
+      <div className="import-website-picker"><div><strong>Websites to search</strong><span>{selectedWebsites.length ? `${selectedWebsites.length} selected` : "Automatic discovery"}</span></div><div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; }) : <small>Nexus will find stores from the imported EANs.</small>}</div></div>
+      <div className="import-steps"><span><b>1</b>Fill in product name and EAN</span><span><b>2</b>Choose websites or use automatic discovery</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/nexus-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || discoveringWebsites} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Find stores & import Excel")}</button><small className="import-limit">Products are saved to the server queue first, then searched in fair batches of three. Closing this tab does not remove queued work.</small>
     </div></div>}
     {toast && <div className="toast"><Icon name="bolt" size={17}/>{toast}</div>}
   </main>;
@@ -555,6 +655,68 @@ function productGroupKey(product: Product) {
 function websiteHostname(url: string) {
   try { return new URL(url).hostname.replace(/^www\./, ""); }
   catch { return url; }
+}
+
+function restoreProductDrafts(value: unknown): ProductDraft[] {
+  if (!Array.isArray(value)) return [];
+  const ids = new Set<string>();
+  const restored: ProductDraft[] = [];
+  for (const [index, item] of value.slice(0, 250).entries()) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Partial<ProductDraft>;
+    const idCandidate = typeof record.id === "string" && record.id.trim() ? record.id.trim() : `product-${index + 1}`;
+    const id = ids.has(idCandidate) ? `${idCandidate}-${index + 1}` : idCandidate;
+    ids.add(id);
+    restored.push({
+      id,
+      productName: typeof record.productName === "string" ? record.productName : "",
+      ean: typeof record.ean === "string" ? record.ean : "",
+      sku: typeof record.sku === "string" ? record.sku : "",
+      ownPrice: typeof record.ownPrice === "string" ? record.ownPrice : "",
+    });
+  }
+  return restored;
+}
+
+function readStoredWebsiteSelection(key: string) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw == null) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) && parsed.every((id) => typeof id === "string") ? parsed as string[] : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeImportHeader(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\/_()\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function importCellText(value: unknown) {
+  if (value == null) return "";
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : "";
+  return String(value).trim();
+}
+
+function parseImportedPrice(value: unknown, rowNumber?: number) {
+  const raw = importCellText(value).replace(/\s/g, "");
+  if (!raw) return null;
+  const normalized = raw.includes(",") && raw.includes(".")
+    ? raw.lastIndexOf(",") > raw.lastIndexOf(".") ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "")
+    : raw.replace(",", ".");
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount < 0) throw new Error(`Invalid price in Excel row ${rowNumber ?? ""}.`);
+  const cents = Math.round(amount * 100);
+  if (!Number.isSafeInteger(cents) || cents > 1_000_000_000) throw new Error(`Invalid price in Excel row ${rowNumber ?? ""}.`);
+  return cents;
 }
 
 function summarizeGroupResult(items: Product[]) {

@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, ne, or } from "drizzle-orm";
+import { and, desc, eq, gt, ne, or, sql } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   customSearchProfiles,
@@ -293,7 +293,7 @@ async function updateProfileHealth(result: ProductSearchResult, checkedAt: strin
 export async function listScraperDashboard() {
   const db = getDb();
   const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
-  const [domains, runs, profiles] = await Promise.all([
+  const [domains, runs, profiles, summaryRows] = await Promise.all([
     db.select().from(scraperDomainState).orderBy(desc(scraperDomainState.updatedAt)).limit(250),
     db
       .select()
@@ -302,25 +302,39 @@ export async function listScraperDashboard() {
       .orderBy(desc(scrapeRuns.startedAt))
       .limit(5_000),
     db.select().from(customSearchProfiles).orderBy(desc(customSearchProfiles.updatedAt)).limit(250),
+    db.execute(sql`
+      SELECT
+        COUNT(*)::integer AS runs,
+        COUNT(*) FILTER (WHERE status IN ('found', 'not_found'))::integer AS operational,
+        COUNT(*) FILTER (WHERE status = 'found')::integer AS matched,
+        COUNT(*) FILTER (WHERE status = 'blocked')::integer AS blocked,
+        COUNT(*) FILTER (WHERE status = 'unavailable')::integer AS unavailable,
+        COUNT(*) FILTER (WHERE challenge_type IS NOT NULL)::integer AS challenged,
+        COUNT(*) FILTER (WHERE challenge_type = 'captcha')::integer AS captcha,
+        COUNT(*) FILTER (WHERE reason_code = 'rate_limited')::integer AS rate_limited,
+        percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS median_response_ms,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE duration_ms IS NOT NULL) AS p95_response_ms
+      FROM public.scrape_runs
+      WHERE started_at > ${since}
+    `),
   ]);
-  const latencies = runs
-    .map((run: { durationMs: number | null }) => run.durationMs)
-    .filter((value: number | null): value is number => value != null)
-    .sort((a: number, b: number) => a - b);
-  const operational = runs.filter(
-    (run: { status: string }) => !["blocked", "unavailable", "needs_review"].includes(run.status),
-  ).length;
+  const aggregate = (summaryRows as unknown as Array<{
+    runs: number; operational: number; matched: number; blocked: number; unavailable: number;
+    challenged: number; captcha: number; rate_limited: number; median_response_ms: number | null; p95_response_ms: number | null;
+  }>)[0];
+  const totalRuns = Number(aggregate?.runs ?? 0);
   const summary = {
-    runs: runs.length,
-    operationalSuccessRate: runs.length ? operational / runs.length : 0,
-    matchRate: runs.length ? runs.filter((run: { status: string }) => run.status === "found").length / runs.length : 0,
-    blockedRate: runs.length
-      ? runs.filter((run: { status: string }) => run.status === "blocked").length / runs.length
-      : 0,
-    unavailableRate: runs.length
-      ? runs.filter((run: { status: string }) => run.status === "unavailable").length / runs.length
-      : 0,
-    medianResponseMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
+    runs: totalRuns,
+    operationalSuccessRate: totalRuns ? Number(aggregate.operational) / totalRuns : 0,
+    matchRate: totalRuns ? Number(aggregate.matched) / totalRuns : 0,
+    blockedRate: totalRuns ? Number(aggregate.blocked) / totalRuns : 0,
+    unavailableRate: totalRuns ? Number(aggregate.unavailable) / totalRuns : 0,
+    challengeRate: totalRuns ? Number(aggregate.challenged) / totalRuns : 0,
+    captchaRate: totalRuns ? Number(aggregate.captcha) / totalRuns : 0,
+    rateLimitedRate: totalRuns ? Number(aggregate.rate_limited) / totalRuns : 0,
+    throughputPerHour: totalRuns / (30 * 24),
+    medianResponseMs: aggregate?.median_response_ms == null ? null : Math.round(Number(aggregate.median_response_ms)),
+    p95ResponseMs: aggregate?.p95_response_ms == null ? null : Math.round(Number(aggregate.p95_response_ms)),
   };
   const lastFailures = new Map<string, typeof runs[number]>();
   for (const run of runs) {
@@ -342,6 +356,8 @@ export async function listScraperDashboard() {
       }) => ({
         ...domain,
         successRate: domain.totalChecks ? (domain.successfulChecks + domain.notFoundChecks) / domain.totalChecks : 0,
+        challengeRate: domain.totalChecks && typeof domain.challengeChecks === "number" ? domain.challengeChecks / domain.totalChecks : 0,
+        blockedRate: domain.totalChecks && typeof domain.blockedChecks === "number" ? domain.blockedChecks / domain.totalChecks : 0,
         averageResponseMs: domain.responseSamples ? Math.round(domain.totalResponseMs / domain.responseSamples) : null,
         lastFailure: lastFailures.get(domain.hostname) ? {
           status: lastFailures.get(domain.hostname)!.status,
