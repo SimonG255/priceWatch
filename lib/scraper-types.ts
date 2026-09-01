@@ -12,6 +12,7 @@ export type ScraperReasonCode =
   | "low_confidence"
   | "price_missing"
   | "rate_limited"
+  | "request_queue_busy"
   | "timeout"
   | "response_too_large"
   | "robots_disallowed"

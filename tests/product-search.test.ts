@@ -110,6 +110,65 @@ test("AI recovery runs when the normal website scan finds no product", async (t)
   assert.equal(result.matchedUrl, "https://shop.example/products/mx-master-4");
 });
 
+test("waits for local request-spacing leases without reporting a website rate limit", async (t) => {
+  const productUrl = `https://shop.example/products/mx-master-4-${ean}`;
+  const siteCalls: string[] = [];
+  let reservationCalls = 0;
+  installFetchMock(t, (url) => {
+    siteCalls.push(url);
+    if (url === storeUrl) return htmlResponse(`<html><body><a href="${productUrl}">${productName} ${ean}</a></body></html>`);
+    if (url === productUrl) return htmlResponse(productPage({ price: "109.90", url: productUrl }));
+    return htmlResponse("Not found", 404);
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, {
+    onlyProfile: true,
+    reserveRequest: async () => {
+      reservationCalls += 1;
+      if (reservationCalls === 1 || reservationCalls >= 5) return { allowed: true };
+      return {
+        allowed: false,
+        waitReason: "request_interval",
+        retryAt: new Date(Date.now() - 100).toISOString(),
+      };
+    },
+  });
+
+  assert.equal(result.status, "found");
+  assert.equal(result.priceCents, 10990);
+  assert.equal(reservationCalls, 5);
+  assert.deepEqual(siteCalls, [storeUrl, productUrl]);
+  assert.equal(result.attempts?.some((attempt) => ["rate_limited", "request_queue_busy"].includes(attempt.reasonCode)), false);
+});
+
+test("does not wait through a real domain cooldown", async (t) => {
+  let siteCalls = 0;
+  let reservationCalls = 0;
+  installFetchMock(t, () => {
+    siteCalls += 1;
+    return htmlResponse("Unexpected request");
+  });
+
+  const result = await searchPublicWebsite(storeUrl, productName, ean, [], undefined, {
+    onlyProfile: true,
+    reserveRequest: async () => {
+      reservationCalls += 1;
+      return {
+        allowed: false,
+        waitReason: "cooldown",
+        retryAt: new Date(Date.now() + 60_000).toISOString(),
+        reasonCode: "rate_limited",
+        failureClass: "temporary",
+      };
+    },
+  });
+
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.reasonCode, "rate_limited");
+  assert.equal(reservationCalls, 1);
+  assert.equal(siteCalls, 0);
+});
+
 test("AI web-search sources can recover a product page when the retry list is empty", async (t) => {
   const recoveredUrl = "https://shop.example/products/mx-master-4";
   installFetchMock(t, (url) => {

@@ -35,7 +35,7 @@ const REASON_LABELS: Record<string, string> = {
   captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required",
   js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence",
   price_missing: "Price missing", response_too_large: "Page too large", robots_disallowed: "Blocked by policy",
-  known_bad_pattern: "Known bad page", profile_drift: "Profile drift", rate_limited: "Rate limited", timeout: "Timed out",
+  known_bad_pattern: "Known bad page", profile_drift: "Profile drift", rate_limited: "Rate limited", request_queue_busy: "Scan queue busy", timeout: "Timed out",
   stale_result: "Superseded scan",
 };
 

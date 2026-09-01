@@ -67,7 +67,7 @@ export type SearchRuntimeOptions = {
   previous?: PreviousVerifiedProduct;
   sitemapCache?: SitemapProductCache;
   renderer?: PermittedPageRenderer;
-  reserveRequest?: () => Promise<{ allowed: boolean; retryAt?: string }>;
+  reserveRequest?: () => Promise<RequestReservation>;
   resultCache?: ScraperResultCache;
   knownBadPatterns?: KnownBadPattern[];
   accessPolicy?: "allow" | "block";
@@ -77,6 +77,16 @@ export type SearchRuntimeOptions = {
   domainProfile?: StoreExtractionProfile;
   network?: ScraperNetwork;
 };
+
+type RequestReservation = {
+  allowed: boolean;
+  retryAt?: string;
+  waitReason?: "request_interval" | "cooldown";
+  reasonCode?: ScraperReasonCode;
+  failureClass?: ScraperFailureClass;
+};
+
+type ReservationWaitResult = RequestReservation & { localQueueTimedOut?: boolean };
 
 type QueueItem = { url: string; profileId: string; profileLabel: string; conditional?: boolean; resourceKind?: "page" | "json" };
 type Page = QueueItem & FetchedPage;
@@ -92,9 +102,10 @@ const MAX_SITEMAP_BYTES = 8_000_000;
 const MAX_SITEMAP_DOCUMENTS = 3;
 const JAGER_HOSTNAME = "trgovinejager.com";
 const MAX_UNAVAILABLE_RETRIES = 2;
+const MAX_LOCAL_REQUEST_QUEUE_WAIT_MS = 30_000;
 
 class PublicPageFetchError extends Error {
-  readonly kind: "timeout" | "blocked" | "challenge" | "unavailable" | "rate_limited" | "response_too_large" | "http_client_error";
+  readonly kind: "timeout" | "blocked" | "challenge" | "unavailable" | "rate_limited" | "queue_busy" | "response_too_large" | "http_client_error";
   readonly httpStatus?: number;
   readonly retryAfterMs?: number;
   readonly reasonCode: ScraperReasonCode;
@@ -690,7 +701,7 @@ async function findSitemapProductUrl(
   ean: string,
   cache: SitemapProductCache | undefined,
   blockPatterns: string[] | undefined,
-  reserveRequest: (() => Promise<{ allowed: boolean; retryAt?: string }>) | undefined,
+  reserveRequest: (() => Promise<RequestReservation>) | undefined,
   onAttempt: SearchRuntimeOptions["onAttempt"],
   knownBadPatterns: KnownBadPattern[] | undefined,
   robotsText?: string,
@@ -931,7 +942,7 @@ type FetchPublicPageOptions = {
   resourceKind?: "page" | "json";
   blockPatterns?: string[];
   conditional?: PreviousVerifiedProduct;
-  reserveRequest?: () => Promise<{ allowed: boolean; retryAt?: string }>;
+  reserveRequest?: () => Promise<RequestReservation>;
   knownBadPatterns?: KnownBadPattern[];
   profileId?: string;
   profileLabel?: string;
@@ -949,21 +960,27 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
     for (let attempt = 0; attempt <= retryBudget; attempt += 1) {
       const startedAt = Date.now();
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        let reservation = await options.reserveRequest?.();
-        if (reservation && !reservation.allowed && reservation.retryAt) {
-          const waitMs = Date.parse(reservation.retryAt) - Date.now();
-          if (waitMs > 0 && waitMs <= 2_000) {
-            await new Promise((resolve) => setTimeout(resolve, waitMs + 25));
-            reservation = await options.reserveRequest?.();
-          }
-        }
+        const reservation = await waitForRequestReservation(options.reserveRequest);
         if (reservation && !reservation.allowed) {
+          const retryAfterMs = reservation.retryAt
+            ? Math.max(0, Date.parse(reservation.retryAt) - Date.now())
+            : undefined;
+          if (reservation.localQueueTimedOut) {
+            throw new PublicPageFetchError("queue_busy", "Nexus's local request queue is busy; no website request was made.", {
+              retryAfterMs,
+              reasonCode: "request_queue_busy",
+              failureClass: "temporary",
+            });
+          }
           throw new PublicPageFetchError("rate_limited", "The website is cooling down to respect its public request limits.", {
-            retryAfterMs: reservation.retryAt ? Math.max(0, Date.parse(reservation.retryAt) - Date.now()) : undefined,
+            retryAfterMs,
+            reasonCode: reservation.reasonCode,
+            failureClass: reservation.failureClass,
           });
         }
+        timer = setTimeout(() => controller.abort(), options.timeoutMs);
         const identity = options.network?.next(originalHostname);
         const headers: Record<string, string> = {
           "User-Agent": identity?.userAgent ?? "Nexus/1.0 (+public product monitor)",
@@ -1065,7 +1082,7 @@ async function fetchPublicPage(input: string, originalHostname: string, options:
         }
         throw failure ?? error;
       } finally {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
       }
     }
   }
@@ -1109,6 +1126,32 @@ function retryDelayWithJitter(milliseconds: number) {
   return Math.ceil(Math.max(0, milliseconds) * (1 + Math.random() * 0.2));
 }
 
+async function waitForRequestReservation(
+  reserveRequest: FetchPublicPageOptions["reserveRequest"],
+): Promise<ReservationWaitResult | undefined> {
+  if (!reserveRequest) return undefined;
+  const startedAt = Date.now();
+  let reservation: ReservationWaitResult = await reserveRequest();
+  while (!reservation.allowed && isLocalRequestInterval(reservation)) {
+    const remainingMs = MAX_LOCAL_REQUEST_QUEUE_WAIT_MS - (Date.now() - startedAt);
+    if (remainingMs <= 0) return { ...reservation, localQueueTimedOut: true };
+    const retryAtMs = reservation.retryAt ? Date.parse(reservation.retryAt) : Number.NaN;
+    const requestedWaitMs = Number.isFinite(retryAtMs) ? Math.max(0, retryAtMs - Date.now()) + 25 : 50;
+    await delay(Math.min(requestedWaitMs, remainingMs));
+    reservation = await reserveRequest();
+  }
+  return reservation;
+}
+
+function isLocalRequestInterval(reservation: RequestReservation) {
+  if (reservation.waitReason === "request_interval") return true;
+  if (reservation.waitReason === "cooldown" || !reservation.retryAt) return false;
+  const waitMs = Date.parse(reservation.retryAt) - Date.now();
+  // Backward-compatible fallback for callbacks that predate waitReason. A
+  // short or elapsed slot is local spacing, not a website rate-limit response.
+  return Number.isFinite(waitMs) && waitMs <= 2_000;
+}
+
 function looksLikeJsonText(value: string) {
   const trimmed = value.trim();
   return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
@@ -1119,6 +1162,7 @@ function reasonCodeForFetchKind(kind: PublicPageFetchError["kind"]): ScraperReas
   if (kind === "blocked") return "blocked";
   if (kind === "challenge") return "bot_wall";
   if (kind === "rate_limited") return "rate_limited";
+  if (kind === "queue_busy") return "request_queue_busy";
   if (kind === "response_too_large") return "response_too_large";
   if (kind === "http_client_error") return "http_client_error";
   return "http_server_error";
@@ -1192,7 +1236,7 @@ function isBlockedFailure(failure: ReturnType<typeof publicPageFetchFailure>) {
 }
 
 function isHostTerminalFailure(failure: PublicPageFetchError) {
-  return failure.kind === "blocked" || failure.kind === "challenge" || failure.kind === "rate_limited";
+  return failure.kind === "blocked" || failure.kind === "challenge" || failure.kind === "rate_limited" || failure.kind === "queue_busy";
 }
 
 function extractPublicDataUrls(page: Page, hostname: string, ean: string) {

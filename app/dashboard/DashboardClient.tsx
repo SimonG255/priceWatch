@@ -270,10 +270,11 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   }
 
   async function scanMany(items: Product[], setProgress: (message: string) => void) {
-    const ordered = fairProductOrder(items);
-    for (let index = 0; index < ordered.length; index += 3) {
-      const batch = ordered.slice(index, index + 3);
-      setProgress(`Searching ${Math.min(index + 3, items.length)} of ${items.length} product-website combinations…`);
+    const batches = fairProductBatches(items, 3);
+    let completed = 0;
+    for (const batch of batches) {
+      completed += batch.length;
+      setProgress(`Searching ${completed} of ${items.length} product-website combinations…`);
       await Promise.all(batch.map(product => scanOne(product.id, true)));
     }
   }
@@ -620,20 +621,23 @@ function formatHistoryDate(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(new Date(timestamp));
 }
 
-function fairProductOrder(items: Product[]) {
+function fairProductBatches(items: Product[], maximumBatchSize: number) {
   const queues = new Map<string, Product[]>();
   for (const item of items) {
     const hostname = websiteHostname(item.websiteUrl).toLowerCase();
     queues.set(hostname, [...(queues.get(hostname) ?? []), item]);
   }
-  const ordered: Product[] = [];
+  const batches: Product[][] = [];
   while ([...queues.values()].some((queue) => queue.length)) {
+    const batch: Product[] = [];
     for (const queue of queues.values()) {
+      if (batch.length >= Math.max(1, maximumBatchSize)) break;
       const item = queue.shift();
-      if (item) ordered.push(item);
+      if (item) batch.push(item);
     }
+    if (batch.length) batches.push(batch);
   }
-  return ordered;
+  return batches;
 }
 
 function groupProducts(items: Product[]): ProductGroup[] {
@@ -737,7 +741,7 @@ function statusLabel(value: string) {
 }
 
 function reasonLabel(value: string) {
-  const labels: Record<string, string> = { captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required", js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", profile_drift: "Profile drift", timeout: "Timed out", robots_disallowed: "Blocked by policy", rate_limited: "Rate limited" };
+  const labels: Record<string, string> = { captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login required", js_challenge: "JavaScript challenge", wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", profile_drift: "Profile drift", timeout: "Timed out", robots_disallowed: "Blocked by policy", rate_limited: "Rate limited", request_queue_busy: "Scan queue busy" };
   return labels[value] || statusLabel(value);
 }
 

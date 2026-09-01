@@ -26,7 +26,7 @@ type Operations = {
 
 const REASONS: Record<string, string> = {
   captcha: "CAPTCHA", bot_wall: "Bot wall", login_wall: "Login wall", js_challenge: "JavaScript challenge",
-  wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", rate_limited: "Rate limited", timeout: "Timed out",
+  wrong_product: "Wrong product", low_confidence: "Low confidence", price_missing: "Price missing", rate_limited: "Rate limited", request_queue_busy: "Scan queue busy", timeout: "Timed out",
   response_too_large: "Page too large", robots_disallowed: "Robots/policy block", known_bad_pattern: "Known bad page", profile_drift: "Profile drift",
   stale_result: "Superseded scan",
 };

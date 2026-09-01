@@ -31,6 +31,7 @@ export async function reserveScraperDomain(hostname: string, options: { interval
   if (cooldown[0]) {
     return {
       allowed: false as const,
+      waitReason: "cooldown" as const,
       retryAt: cooldown[0].cooldownUntil,
       reasonCode: cooldown[0].reasonCode as ScraperReasonCode,
       failureClass: cooldown[0].failureClass as ScraperFailureClass,
@@ -56,6 +57,7 @@ export async function reserveScraperDomain(hostname: string, options: { interval
     .limit(1);
   return {
     allowed: false as const,
+    waitReason: "request_interval" as const,
     retryAt: current?.nextAllowedAt ?? undefined,
     reasonCode: (current?.lastReasonCode as ScraperReasonCode | null | undefined) ?? undefined,
     failureClass: (current?.failureClass as ScraperFailureClass | null | undefined) ?? undefined,
@@ -84,7 +86,9 @@ export async function getScraperDomainAvailability(hostname: string) {
     .orderBy(desc(scraperDomainCooldowns.cooldownUntil))
     .limit(1);
   const now = Date.now();
-  const retryAt = [state?.backoffUntil, state?.nextAllowedAt, cooldown?.cooldownUntil]
+  // nextAllowedAt is only a per-request spacing lease. It is not a domain
+  // cooldown and must never make a complete product scan unavailable.
+  const retryAt = [state?.backoffUntil, cooldown?.cooldownUntil]
     .filter((value): value is string => typeof value === "string" && Date.parse(value) > now)
     .sort((left, right) => Date.parse(right) - Date.parse(left))[0];
   return retryAt
