@@ -6,6 +6,7 @@ import writeXlsxFile from "write-excel-file";
 import { createClient as createSupabaseClient } from "../../lib/supabase/client";
 import { formatAppDateTime } from "../../lib/time-zone";
 import type { UserPlan } from "../../lib/plans";
+import { WORLD_COUNTRIES } from "../../lib/countries";
 import PricingIntelligence from "./PricingIntelligence";
 
 type IconName = "grid" | "box" | "settings" | "plus" | "search" | "bolt" | "external" | "menu" | "close" | "upload" | "download" | "refresh" | "trash" | "file";
@@ -45,6 +46,10 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+function CountrySelect({ value, onChange, helpText }: { value: string; onChange: (value: string) => void; helpText: string }) {
+  return <label className="discovery-country-field"><span>Search country</span><select aria-label="Search country" value={value} onChange={event => onChange(event.target.value)}><option value="">Select a country...</option>{WORLD_COUNTRIES.map(country => <option key={country.code} value={country.code}>{country.name}</option>)}</select><small>{helpText}</small></label>;
+}
+
 async function jsonRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...options, headers: { "Content-Type": "application/json", ...(options?.headers ?? {}) } });
   const body = await response.json() as T & { error?: string };
@@ -72,6 +77,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   const [expandedProductKey, setExpandedProductKey] = useState<string | null>(null);
   const [historyByProduct, setHistoryByProduct] = useState<Record<string, ProductHistoryState>>({});
   const [selectedWebsiteIds, setSelectedWebsiteIds] = useState<string[]>([]);
+  const [discoveryCountry, setDiscoveryCountry] = useState("");
   const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
   const [productDrafts, setProductDrafts] = useState<ProductDraft[]>([emptyDraft()]);
   const [bulkProgress, setBulkProgress] = useState("");
@@ -219,19 +225,14 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     setSelectedWebsiteIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
   }
 
-  function askForDiscoveryCountry() {
-    const country = window.prompt("Which country should Nexus search in?", "")?.trim();
-    if (!country) throw new Error("Enter a country before discovering stores.");
-    return country;
-  }
-
   async function discoverWebsitesForProducts(items: Array<Pick<ProductDraft, "productName" | "ean">>) {
     const productsToDiscover = [...new Map(items.map(item => [item.ean.replace(/\D/g, ""), {
       productName: item.productName.trim(),
       ean: item.ean.trim(),
     }])).values()];
     if (!productsToDiscover.length) throw new Error("Enter at least one product name and EAN first.");
-    const country = askForDiscoveryCountry();
+    if (!discoveryCountry) throw new Error("Select a country before discovering stores.");
+    const country = discoveryCountry;
     setDiscoveringWebsites(true);
     setDiscoveryProgress("Finding online stores…");
     try {
@@ -457,7 +458,8 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
 
       <section className="product-search-card website-card">
         <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Let Nexus find stores automatically</h2><p>Enter a product below and Nexus will search the web for relevant online stores. You can still add a specific website manually when needed.</p></div></div>
-        <form className="website-form" onSubmit={addWebsite}><label><span>Website URL <small>optional</small></span><input type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/><small>Or leave this empty and let Nexus discover stores from the products below.</small></label><div className="website-form-actions"><button className="auto-discover" disabled={saving || discoveringWebsites || !activeDrafts.length} type="button" onClick={discoverWebsites}><Icon name="bolt"/>{discoveryProgress || "Find stores automatically"}</button><button className="secondary-action" disabled={saving || discoveringWebsites} type="submit"><Icon name="plus"/>Add website</button></div></form>
+         <CountrySelect value={discoveryCountry} onChange={setDiscoveryCountry} helpText="Required when Nexus discovers stores automatically."/>
+         <form className="website-form" onSubmit={addWebsite}><label><span>Website URL <small>optional</small></span><input type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/><small>Or leave this empty and let Nexus discover stores from the products below.</small></label><div className="website-form-actions"><button className="auto-discover" disabled={saving || discoveringWebsites || !activeDrafts.length || !discoveryCountry} type="button" onClick={discoverWebsites}><Icon name="bolt"/>{discoveryProgress || "Find stores automatically"}</button><button className="secondary-action" disabled={saving || discoveringWebsites} type="submit"><Icon name="plus"/>Add website</button></div></form>
         <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
         <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <span className="website-pill" key={website.id}><button type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button><button type="button" className="website-remove" onClick={() => removeWebsite(website)} aria-label={`Remove ${new URL(website.url).hostname}`}><Icon name="trash" size={12}/></button></span>; }) : <small>No websites added yet.</small>}</div>
       </section>
@@ -474,7 +476,7 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
             <label><span>Your price <small>optional</small></span><input type="number" min="0" step="0.01" value={draft.ownPrice} onChange={event => updateDraft(draft.id, "ownPrice", event.target.value)} placeholder="119.99"/></label>
             <button className="remove-draft" type="button" disabled={productDrafts.length === 1} onClick={() => removeDraft(draft.id)} aria-label={`Remove product row ${index + 1}`}><Icon name="trash" size={15}/></button>
           </div>)}</div>
-          <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{selectedWebsites.length ? `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} × ${selectedWebsites.length} website${selectedWebsites.length === 1 ? "" : "s"} = ${combinationCount} searches` : `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} · stores found automatically`}</strong><small>Drafts save on this device; submitted searches enter the durable server queue before scanning.</small></div><button className="primary search-submit" disabled={saving || discoveringWebsites || !activeDrafts.length} type="submit"><Icon name={selectedWebsites.length ? "search" : "bolt"}/>{bulkProgress || (selectedWebsites.length ? "Add & search combinations" : "Find stores & search")}</button></div>
+           <div className="bulk-form-footer"><button className="secondary-action add-row" type="button" disabled={saving || productDrafts.length >= 250} onClick={addDraft}><Icon name="plus"/>Add another product</button><div className="combination-summary"><strong>{selectedWebsites.length ? `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} × ${selectedWebsites.length} website${selectedWebsites.length === 1 ? "" : "s"} = ${combinationCount} searches` : `${uniqueDraftCount} product${uniqueDraftCount === 1 ? "" : "s"} · stores found automatically`}</strong><small>Drafts save on this device; submitted searches enter the durable server queue before scanning.</small></div><button className="primary search-submit" disabled={saving || discoveringWebsites || !activeDrafts.length || (!selectedWebsites.length && !discoveryCountry)} type="submit"><Icon name={selectedWebsites.length ? "search" : "bolt"}/>{bulkProgress || (selectedWebsites.length ? "Add & search combinations" : "Find stores & search")}</button></div>
         </form>
         <details className="search-routing-help">
           <summary>How Nexus chooses a website search URL</summary>
@@ -518,9 +520,10 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     </section>
 
     {importOpen && <div className="modal-backdrop" onMouseDown={() => !importProgress && setImportOpen(false)}><div className="modal import-modal" role="dialog" aria-modal="true" aria-labelledby="import-title" onMouseDown={event => event.stopPropagation()}>
-      <button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required. Each row will be searched on the websites selected below.</p>
+       <button className="modal-close" onClick={() => !importProgress && setImportOpen(false)} aria-label="Close"><Icon name="close"/></button><span className="modal-icon"><Icon name="file"/></span><h2 id="import-title">Import products from Excel</h2><p>Use one row per product. Only Product Name and EAN are required. Each row will be searched on the websites selected below.</p>
+       <CountrySelect value={discoveryCountry} onChange={setDiscoveryCountry} helpText="Required when automatic discovery is selected."/>
       <div className="import-website-picker"><div><strong>Websites to search</strong><span>{selectedWebsites.length ? `${selectedWebsites.length} selected` : "Automatic discovery"}</span></div><div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <button type="button" key={website.id} aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button>; }) : <small>Nexus will find stores from the imported EANs.</small>}</div></div>
-      <div className="import-steps"><span><b>1</b>Fill in product name and EAN</span><span><b>2</b>Choose websites or use automatic discovery</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/nexus-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || discoveringWebsites} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Find stores & import Excel")}</button><small className="import-limit">Products are saved to the server queue first, then searched in fair batches of three. Closing this tab does not remove queued work.</small>
+       <div className="import-steps"><span><b>1</b>Fill in product name and EAN</span><span><b>2</b>Choose websites or use automatic discovery</span><span><b>3</b>Upload the .xlsx file</span></div><a className="template-download" href="/nexus-product-import-template.xlsx" download><Icon name="download"/>Download Excel template</a><input ref={fileRef} className="file-input" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={event => event.target.files?.[0] && importWorkbook(event.target.files[0])}/><button className="primary modal-submit" disabled={!!importProgress || discoveringWebsites || (!selectedWebsites.length && !discoveryCountry)} onClick={() => fileRef.current?.click()}><Icon name="upload"/>{importProgress || (selectedWebsites.length ? "Choose Excel file" : "Find stores & import Excel")}</button><small className="import-limit">Products are saved to the server queue first, then searched in fair batches of three. Closing this tab does not remove queued work.</small>
     </div></div>}
     {toast && <div className="toast"><Icon name="bolt" size={17}/>{toast}</div>}
   </main>;
