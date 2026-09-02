@@ -77,6 +77,8 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
   const [expandedProductKey, setExpandedProductKey] = useState<string | null>(null);
   const [historyByProduct, setHistoryByProduct] = useState<Record<string, ProductHistoryState>>({});
   const [selectedWebsiteIds, setSelectedWebsiteIds] = useState<string[]>([]);
+  const [websiteDeleteIds, setWebsiteDeleteIds] = useState<string[]>([]);
+  const [websiteDeleteLoading, setWebsiteDeleteLoading] = useState(false);
   const [discoveryCountry, setDiscoveryCountry] = useState("");
   const [newWebsiteUrl, setNewWebsiteUrl] = useState("");
   const [productDrafts, setProductDrafts] = useState<ProductDraft[]>([emptyDraft()]);
@@ -366,8 +368,31 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
       await jsonRequest(`/api/websites/${website.id}`, { method: "DELETE" });
       setWebsites((current) => current.filter((item) => item.id !== website.id));
       setSelectedWebsiteIds((current) => current.filter((id) => id !== website.id));
+      setWebsiteDeleteIds((current) => current.filter((id) => id !== website.id));
       showToast("Website removed");
     } catch (err) { setError(err instanceof Error ? err.message : "Website could not be removed."); }
+  }
+
+  async function removeSelectedWebsites() {
+    if (!websiteDeleteIds.length) return;
+    if (!window.confirm(`Remove ${websiteDeleteIds.length} selected websites? Websites with monitored products cannot be removed.`)) return;
+    setWebsiteDeleteLoading(true); setError("");
+    try {
+      const result = await jsonRequest<{ deletedIds: string[]; blockedIds: string[] }>("/api/websites", {
+        method: "DELETE",
+        body: JSON.stringify({ websiteIds: websiteDeleteIds }),
+      });
+      const deleted = new Set(result.deletedIds);
+      setWebsites((current) => current.filter((website) => !deleted.has(website.id)));
+      setSelectedWebsiteIds((current) => current.filter((id) => !deleted.has(id)));
+      setWebsiteDeleteIds((current) => current.filter((id) => !deleted.has(id)));
+      if (result.blockedIds.length) {
+        setError(`${result.blockedIds.length} selected website${result.blockedIds.length === 1 ? " still has" : "s still have"} monitored products and could not be removed.`);
+      } else {
+        showToast(`${result.deletedIds.length} website${result.deletedIds.length === 1 ? "" : "s"} removed`);
+      }
+    } catch (err) { setError(err instanceof Error ? err.message : "Websites could not be removed."); }
+    finally { setWebsiteDeleteLoading(false); }
   }
 
   async function deleteWorkspace() {
@@ -460,8 +485,9 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
         <div className="search-intro"><span className="search-mark"><Icon name="external" size={22}/></span><div><span className="eyebrow">YOUR WEBSITES</span><h2>Let Nexus find stores automatically</h2><p>Enter a product below and Nexus will search the web for relevant online stores. You can still add a specific website manually when needed.</p></div></div>
          <CountrySelect value={discoveryCountry} onChange={setDiscoveryCountry} helpText="Required when Nexus discovers stores automatically."/>
          <form className="website-form" onSubmit={addWebsite}><label><span>Website URL <small>optional</small></span><input type="url" value={newWebsiteUrl} onChange={event => setNewWebsiteUrl(event.target.value)} placeholder="https://competitor-store.com"/><small>Or leave this empty and let Nexus discover stores from the products below.</small></label><div className="website-form-actions"><button className="auto-discover" disabled={saving || discoveringWebsites || !activeDrafts.length || !discoveryCountry} type="button" onClick={discoverWebsites}><Icon name="bolt"/>{discoveryProgress || "Find stores automatically"}</button><button className="secondary-action" disabled={saving || discoveringWebsites} type="submit"><Icon name="plus"/>Add website</button></div></form>
-        <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
-        <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); return <span className="website-pill" key={website.id}><button type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button><button type="button" className="website-remove" onClick={() => removeWebsite(website)} aria-label={`Remove ${new URL(website.url).hostname}`}><Icon name="trash" size={12}/></button></span>; }) : <small>No websites added yet.</small>}</div>
+         <div className="website-selection-head"><span>{selectedWebsites.length} of {websites.length} selected for searching</span>{websites.length > 0 && <div><button type="button" onClick={() => setSelectedWebsiteIds(websites.map(website => website.id))}>Select all</button><button type="button" onClick={() => setSelectedWebsiteIds([])}>Clear</button></div>}</div>
+         <div className="website-delete-toolbar"><span>{websiteDeleteIds.length ? `${websiteDeleteIds.length} website${websiteDeleteIds.length === 1 ? "" : "s"} marked for removal` : "Select websites to remove"}</span><div><button type="button" disabled={websiteDeleteLoading} onClick={() => setWebsiteDeleteIds(websites.map(website => website.id))}>Select all</button><button type="button" disabled={websiteDeleteLoading || !websiteDeleteIds.length} onClick={() => setWebsiteDeleteIds([])}>Clear</button><button type="button" className="danger" disabled={websiteDeleteLoading || !websiteDeleteIds.length} onClick={removeSelectedWebsites}>{websiteDeleteLoading ? "Removing..." : "Delete selected"}</button></div></div>
+         <div className="website-list selectable">{websites.length ? websites.map(website => { const selected = selectedWebsiteIds.includes(website.id); const markedForDeletion = websiteDeleteIds.includes(website.id); return <span className="website-pill" key={website.id}><label className="website-delete-check"><input type="checkbox" checked={markedForDeletion} onChange={() => setWebsiteDeleteIds(current => current.includes(website.id) ? current.filter(id => id !== website.id) : [...current, website.id])} aria-label={`Select ${new URL(website.url).hostname} for removal`}/></label><button type="button" aria-pressed={selected} className={selected ? "selected" : ""} onClick={() => toggleWebsite(website.id)}><i>{selected ? "✓" : ""}</i>{new URL(website.url).hostname}</button><button type="button" className="website-remove" onClick={() => removeWebsite(website)} aria-label={`Remove ${new URL(website.url).hostname}`}><Icon name="trash" size={12}/></button></span>; }) : <small>No websites added yet.</small>}</div>
       </section>
 
       <section className="product-search-card" id="search-product">
