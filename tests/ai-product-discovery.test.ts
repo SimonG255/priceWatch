@@ -92,11 +92,33 @@ test("discovers public stores globally and removes non-store sources", async (t)
     else process.env.OPENAI_API_KEY = originalApiKey;
   });
 
-  const result = await discoverStoreProductPages([{ productName: "Example product", ean: "5099206123456" }]);
+  const result = await discoverStoreProductPages([{ productName: "Example product", ean: "5099206123456" }], "Slovenia");
 
   assert.deepEqual(result.stores.map((store) => store.hostname), ["store.example", "trgovinejager.com", "shop.example"]);
   assert.equal(requestBody?.tool_choice, "required");
   assert.deepEqual(requestBody?.tools, [{ type: "web_search" }]);
+  assert.match(String(requestBody?.input), /Slovenia/);
+});
+
+test("passes an ISO country code to web search", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "test-key";
+  let requestBody: Record<string, unknown> | undefined;
+  globalThis.fetch = (async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return new Response(JSON.stringify({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({ stores: [] }) }] }] }), { status: 200 });
+  }) as typeof fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey == null) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
+  });
+
+  await discoverStoreProductPages([{ productName: "Example product", ean: "5099206123456" }], "SI");
+
+  assert.deepEqual(requestBody?.tools, [{ type: "web_search", user_location: { type: "approximate", country: "SI" } }]);
+  assert.match(String(requestBody?.input), /Target country/);
 });
 
 test("keeps only same-store replacement URLs from a structured AI review", () => {

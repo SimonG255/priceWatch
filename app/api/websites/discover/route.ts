@@ -13,9 +13,10 @@ export async function POST(request: Request) {
 
   try {
     await ensureProductsSchema();
-    const body = await request.json() as { products?: unknown };
+    const body = await request.json() as { products?: unknown; country?: unknown };
     const inputs = normalizeDiscoveryInputs(body.products);
-    const discovery = await discoverStoreProductPages(inputs);
+    const country = normalizeDiscoveryCountry(body.country);
+    const discovery = await discoverStoreProductPages(inputs, country);
     if (!discovery.attempted) throw new Error("Automatic store discovery is not configured yet. Add a website manually or configure the OpenAI API key.");
     if (discovery.error && !discovery.stores.length) throw new Error(discovery.error);
     if (!discovery.stores.length) throw new Error("No matching online stores were found. Try a more specific product name or check the EAN.");
@@ -59,4 +60,12 @@ function normalizeDiscoveryInputs(value: unknown): StoreDiscoveryInput[] {
     if (!unique.has(details.ean)) unique.set(details.ean, { productName: details.productName, ean: details.ean });
   }
   return [...unique.values()];
+}
+
+function normalizeDiscoveryCountry(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Enter a country before discovering stores.");
+  const country = value.trim().replace(/\s+/g, " ");
+  if (!country) throw new Error("Enter a country before discovering stores.");
+  if (country.length > 80 || /[\u0000-\u001F\u007F]/.test(country)) throw new Error("Enter a valid country name.");
+  return country;
 }

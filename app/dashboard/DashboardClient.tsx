@@ -219,18 +219,25 @@ export default function Dashboard({ displayName, email, plan, authProvider, isAd
     setSelectedWebsiteIds(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id]);
   }
 
+  function askForDiscoveryCountry() {
+    const country = window.prompt("Which country should Nexus search in?", "")?.trim();
+    if (!country) throw new Error("Enter a country before discovering stores.");
+    return country;
+  }
+
   async function discoverWebsitesForProducts(items: Array<Pick<ProductDraft, "productName" | "ean">>) {
     const productsToDiscover = [...new Map(items.map(item => [item.ean.replace(/\D/g, ""), {
       productName: item.productName.trim(),
       ean: item.ean.trim(),
     }])).values()];
     if (!productsToDiscover.length) throw new Error("Enter at least one product name and EAN first.");
+    const country = askForDiscoveryCountry();
     setDiscoveringWebsites(true);
     setDiscoveryProgress("Finding online stores…");
     try {
       const result = await jsonRequest<{ websites: Website[]; discoveredCount: number }>("/api/websites/discover", {
         method: "POST",
-        body: JSON.stringify({ products: productsToDiscover }),
+        body: JSON.stringify({ products: productsToDiscover, country }),
       });
       setWebsites(current => {
         const incomingIds = new Set(result.websites.map(website => website.id));
